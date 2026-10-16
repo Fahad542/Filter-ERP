@@ -1,0 +1,57 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+.idea/
+*.iml
+
+# IntelliJ related
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains settings for Visual Studio Code.
+# It is often shared between project members.
+# If you wish to exclude it, uncomment the next line.
+# .vscode/
+
+# Flutter/Dart related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+**/ios/Flutter/App.framework
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/Flutter/podhelper.rb
+**/ios/ServiceDefinitions.json
+**/ios/Runner/GeneratedPluginRegistrant.h
+**/ios/Runner/GeneratedPluginRegistrant.m
+**/macos/Flutter/ephemeral/
+**/macos/Flutter/GeneratedPluginRegistrant.swift
+**/android/app/src/main/java/io/flutter/plugins/
+**/android/local.properties
+**/android/Key.properties
+**/android/app/src/main/res/values/strings.xml
+**/*.flutter-plugins
+**/*.flutter-plugins-dependencies
+**/.dart_tool/
+**/.packages
+**/.pub-cache/
+**/.pub/
+**/build/
+
+# Web related
+**/node_modules/
+**/build/web
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.dart_tool/
+
+# Exceptions to above rules
+!**/src/main/kotlin/io/flutter/plugins/

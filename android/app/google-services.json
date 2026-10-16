@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "890790504509",
+    "project_id": "filter-erp",
+    "storage_bucket": "filter-erp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:890790504509:android:0eb3468da780a8c45a2254",
+        "android_client_info": {
+          "package_name": "com.filter_erp.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAFnttIt0T_fdnpTwYaDTiOqPy8jn8r7s0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:890790504509:android:0eb3468da780a8c45a2255",
+        "android_client_info": {
+          "package_name": "com.filter.hub"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAFnttIt0T_fdnpTwYaDTiOqPy8jn8r7s0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
