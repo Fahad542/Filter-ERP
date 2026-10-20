@@ -11,6 +11,7 @@ import '../../../widgets/pos_segmented_list_tabs.dart';
 import '../../../widgets/pos_shell_rail_layout.dart';
 import '../../../widgets/pos_shimmer.dart';
 import '../../../widgets/pos_widgets.dart';
+import 'po_pos_ui.dart';
 import 'po_product_search_field.dart';
 import '../../../models/purchase_order_models.dart';
 import 'purchase_order_view_model.dart';
@@ -308,36 +309,51 @@ class _CreatePoTabState extends State<_CreatePoTab> {
             ),
           ),
           const SizedBox(height: 12),
-          FilledButton(
-            onPressed: vm.isSubmitting
-                ? null
-                : () async {
-                    FocusManager.instance.primaryFocus?.unfocus();
-                    final ok = await vm.submitPurchaseOrder(
-                      (msg) => ToastService.showError(context, msg),
-                    );
-                    if (!context.mounted || !ok) return;
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (!context.mounted) return;
-                      ToastService.showSuccess(
-                        context,
-                        l10n.posPoSubmitSuccess,
-                        messageOnly: true,
+          SizedBox(
+            width: double.infinity,
+            height: isTablet ? 46 : 44,
+            child: ElevatedButton(
+              onPressed: vm.isSubmitting
+                  ? null
+                  : () async {
+                      FocusManager.instance.primaryFocus?.unfocus();
+                      final ok = await vm.submitPurchaseOrder(
+                        (msg) => ToastService.showError(context, msg),
                       );
-                    });
-                  },
-            style: FilledButton.styleFrom(
-              backgroundColor: AppColors.primaryLight,
-              foregroundColor: Colors.black,
-              padding: const EdgeInsets.symmetric(vertical: 14),
+                      if (!context.mounted || !ok) return;
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (!context.mounted) return;
+                        ToastService.showSuccess(
+                          context,
+                          l10n.posPoSubmitSuccess,
+                          messageOnly: true,
+                        );
+                      });
+                    },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primaryLight,
+                foregroundColor: AppColors.onPrimaryLight,
+                disabledBackgroundColor:
+                    AppColors.primaryLight.withValues(alpha: 0.5),
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              child: vm.isSubmitting
+                  ? const SizedBox(
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: AppColors.secondaryLight,
+                      ),
+                    )
+                  : Text(
+                      l10n.posPoSubmit,
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
             ),
-            child: vm.isSubmitting
-                ? const SizedBox(
-                    height: 20,
-                    width: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : Text(l10n.posPoSubmit),
           ),
         ],
       ),
@@ -355,29 +371,82 @@ class _HistoryTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
     if (vm.history.isEmpty) {
-      return Center(child: Text(l10n.posPoNoHistory));
+      return PoPosEmptyState(
+        message: l10n.posPoNoHistory,
+        icon: Icons.history_rounded,
+      );
     }
     return ListView.separated(
       padding: EdgeInsets.all(isTablet ? 20 : 12),
       itemCount: vm.history.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
       itemBuilder: (context, index) {
         final po = vm.history[index];
-        return Card(
-          child: ListTile(
-            title: Text(po.invoiceNumber.isEmpty ? po.id : po.invoiceNumber),
-            subtitle: Text('${po.supplierName} · ${po.issueDate}'),
-            trailing: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text(
-                  po.status,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
+        final title =
+            po.invoiceNumber.isEmpty ? po.id : po.invoiceNumber;
+        return PoPosCard(
+          padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+          child: Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: AppColors.primaryLight,
+                  borderRadius: BorderRadius.circular(10),
                 ),
-                Text('${po.grandTotal.toStringAsFixed(2)} SAR'),
-              ],
-            ),
+                child: const Icon(
+                  Icons.receipt_long_rounded,
+                  color: AppColors.secondaryLight,
+                  size: 18,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF1E2124),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '${po.supplierName} · ${po.issueDate}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: Colors.grey.shade600,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  PoPosStatusBadge(status: po.status),
+                  const SizedBox(height: 6),
+                  Text(
+                    '${po.grandTotal.toStringAsFixed(2)} SAR',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                      color: AppColors.secondaryLight,
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
         );
       },
@@ -445,30 +514,113 @@ class _IncomingTabState extends State<_IncomingTab> {
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
     if (vm.incoming.isEmpty) {
-      return Center(child: Text(l10n.posPoNoIncoming));
+      return PoPosEmptyState(
+        message: l10n.posPoNoIncoming,
+        icon: Icons.local_shipping_outlined,
+      );
     }
     return ListView.separated(
       padding: EdgeInsets.all(isTablet ? 20 : 12),
       itemCount: vm.incoming.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
       itemBuilder: (context, index) {
         final inv = vm.incoming[index];
         final isLoading = _loadingInvoiceId == inv.id;
-        return Card(
-          child: ListTile(
-            title: Text(inv.invoiceNo),
-            subtitle: Text('${inv.supplierName}\n${inv.productLabel}'),
-            isThreeLine: true,
-            trailing: FilledButton(
-              onPressed: isLoading ? null : () => _openReceiveSheet(inv.id),
-              child: isLoading
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : Text(l10n.posPoReceive),
-            ),
+        return PoPosCard(
+          padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+          child: Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: AppColors.primaryLight,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.inventory_2_outlined,
+                  color: AppColors.secondaryLight,
+                  size: 18,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      inv.invoiceNo,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF1E2124),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      inv.supplierName,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey.shade700,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (inv.productLabel.trim().isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        inv.productLabel,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w500,
+                          color: Colors.grey.shade500,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              SizedBox(
+                height: 38,
+                child: ElevatedButton(
+                  onPressed:
+                      isLoading ? null : () => _openReceiveSheet(inv.id),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primaryLight,
+                    foregroundColor: AppColors.onPrimaryLight,
+                    disabledBackgroundColor:
+                        AppColors.primaryLight.withValues(alpha: 0.5),
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: isLoading
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: AppColors.secondaryLight,
+                          ),
+                        )
+                      : Text(
+                          l10n.posPoReceive,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            fontSize: 12,
+                          ),
+                        ),
+                ),
+              ),
+            ],
           ),
         );
       },
@@ -598,11 +750,13 @@ class _PoReceiveSheetState extends State<_PoReceiveSheet> {
                       keyboardType: const TextInputType.numberWithOptions(
                         decimal: true,
                       ),
-                      decoration: InputDecoration(
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      decoration: poPosInputDecoration(
+                        hint: '${ln.invoiceQty}',
                         labelText: widget.l10n.posPoReceivedQty,
-                        hintText: '${ln.invoiceQty}',
-                        border: const OutlineInputBorder(),
-                        isDense: true,
                       ),
                     ),
                   ],
@@ -614,15 +768,33 @@ class _PoReceiveSheetState extends State<_PoReceiveSheet> {
           ListenableBuilder(
             listenable: widget.vm,
             builder: (context, _) {
-              return FilledButton(
-                onPressed: widget.vm.isSubmitting ? null : _submit,
-                child: widget.vm.isSubmitting
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Text(widget.l10n.posPoConfirmReceive),
+              return SizedBox(
+                width: double.infinity,
+                height: 44,
+                child: ElevatedButton(
+                  onPressed: widget.vm.isSubmitting ? null : _submit,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primaryLight,
+                    foregroundColor: AppColors.onPrimaryLight,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: widget.vm.isSubmitting
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: AppColors.secondaryLight,
+                          ),
+                        )
+                      : Text(
+                          widget.l10n.posPoConfirmReceive,
+                          style: const TextStyle(fontWeight: FontWeight.w800),
+                        ),
+                ),
               );
             },
           ),

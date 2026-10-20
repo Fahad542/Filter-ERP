@@ -187,6 +187,28 @@ class AiOrdersViewModel extends ChangeNotifier {
     fetchList();
   }
 
+  /// Seed detail from list cache (instant paint), then refresh from API.
+  Future<void> openDetail(String id) async {
+    AiOrderCashier? cached;
+    for (final o in orders) {
+      if (o.id == id) {
+        cached = o;
+        break;
+      }
+    }
+    if (cached == null && selectedOrder?.id == id) {
+      cached = selectedOrder;
+    }
+    if (cached != null) {
+      selectedOrder = cached;
+      detailError = null;
+      notifyListeners();
+      await loadDetail(id, silent: true);
+      return;
+    }
+    await loadDetail(id, silent: false);
+  }
+
   Future<void> loadDetail(String id, {bool silent = false}) async {
     if (!silent) {
       isDetailLoading = true;
@@ -200,6 +222,7 @@ class AiOrdersViewModel extends ChangeNotifier {
         return;
       }
       selectedOrder = await repository.getAiOrder(token, id);
+      detailError = null;
     } catch (e) {
       if (!silent) detailError = e.toString();
       if (kDebugMode) debugPrint('[AI Orders] detail error: $e');

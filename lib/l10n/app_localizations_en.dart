@@ -3202,7 +3202,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get posOrdersAddCustomerDetails => 'Add customer details';
 
   @override
-  String get posOrdersSelectPaymentMethod => 'Select payment';
+  String get posOrdersSelectPaymentMethod => 'Select payment method';
 
   @override
   String get posOrdersSelectYourPaymentMethod => 'Select your payment method';
@@ -5326,6 +5326,10 @@ class AppLocalizationsEn extends AppLocalizations {
       'Each payment line must be at least 0.01 SAR.';
 
   @override
+  String get posPaymentsEnterSelectedAmounts =>
+      'Please enter the amount for each selected payment method.';
+
+  @override
   String posPaymentsSplitMismatch(String payable, String current) {
     return 'Split totals must equal the order payable amount ($payable SAR). Currently: $current SAR.';
   }
@@ -6677,7 +6681,7 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get posOrdersChecklistOptional => 'Checklist (optional)';
+  String get posOrdersChecklistOptional => 'Select checklist';
 
   @override
   String get posOrdersChecklistSelectAll => 'Select all';

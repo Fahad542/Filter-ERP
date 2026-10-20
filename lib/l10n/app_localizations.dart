@@ -6147,7 +6147,7 @@ abstract class AppLocalizations {
   /// No description provided for @posOrdersSelectPaymentMethod.
   ///
   /// In en, this message translates to:
-  /// **'Select payment'**
+  /// **'Select payment method'**
   String get posOrdersSelectPaymentMethod;
 
   /// No description provided for @posOrdersSelectYourPaymentMethod.
@@ -10042,6 +10042,12 @@ abstract class AppLocalizations {
   /// **'Each payment line must be at least 0.01 SAR.'**
   String get posPaymentsLineMinimum;
 
+  /// No description provided for @posPaymentsEnterSelectedAmounts.
+  ///
+  /// In en, this message translates to:
+  /// **'Please enter the amount for each selected payment method.'**
+  String get posPaymentsEnterSelectedAmounts;
+
   /// No description provided for @posPaymentsSplitMismatch.
   ///
   /// In en, this message translates to:
@@ -12493,7 +12499,7 @@ abstract class AppLocalizations {
   /// No description provided for @posOrdersChecklistOptional.
   ///
   /// In en, this message translates to:
-  /// **'Checklist (optional)'**
+  /// **'Select checklist'**
   String get posOrdersChecklistOptional;
 
   /// No description provided for @posOrdersChecklistSelectAll.

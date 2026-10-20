@@ -78,6 +78,7 @@ class PosKsaVehicleMakeModelRow extends StatefulWidget {
     this.readOnly = false,
     this.compact = true,
     this.spacing = 8,
+    this.thirdChild,
   });
 
   final TextEditingController makeController;
@@ -92,6 +93,8 @@ class PosKsaVehicleMakeModelRow extends StatefulWidget {
   final bool readOnly;
   final bool compact;
   final double spacing;
+  /// Optional third column (e.g. VIN) for a 3-field row.
+  final Widget? thirdChild;
 
   @override
   State<PosKsaVehicleMakeModelRow> createState() =>
@@ -143,6 +146,10 @@ class _PosKsaVehicleMakeModelRowState extends State<PosKsaVehicleMakeModelRow> {
         Expanded(child: _makeField(context, isAr, optionalSuffix)),
         SizedBox(width: widget.spacing),
         Expanded(child: _modelField(context, isAr, optionalSuffix)),
+        if (widget.thirdChild != null) ...[
+          SizedBox(width: widget.spacing),
+          Expanded(child: widget.thirdChild!),
+        ],
       ],
     );
   }

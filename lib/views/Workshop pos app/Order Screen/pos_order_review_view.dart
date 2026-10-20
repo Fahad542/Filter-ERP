@@ -27,6 +27,7 @@ import 'pos_orders_hub_dialog.dart';
 import '../Add Customer Screen/pos_add_customer_phone_format.dart';
 import '../Add Customer Screen/add_customer_view_model.dart'
     show AddCustomerViewModel, PosAddCustomerVehicleKind, vehicleModelYearChoices;
+import '../../../models/cashier_corporate_accounts_api_model.dart';
 import '../../../models/customer_search_model.dart';
 import '../../../utils/app_formatters.dart';
 import '../../../utils/gcc_plate.dart' hide canonicalSaudiPlateForApi;
@@ -37,6 +38,7 @@ import '../../../services/softpos_bridge.dart';
 import '../../../services/softpos_invoice_flow.dart';
 import '../../../services/softpos_connection_guard.dart';
 import '../../../widgets/softpos_settings_dialog.dart';
+import '../../../widgets/pos_shimmer.dart';
 
 
 
@@ -445,17 +447,19 @@ InputDecoration _walkInInvoiceMobileFieldDecoration(
 
 Widget _walkInInvoiceSectionHeader(
     String title,
-    IconData icon, {
+    IconData? icon, {
       bool compact = false,
     }) {
   return Row(
     children: [
-      Icon(
-        icon,
-        size: compact ? 17 : 20,
-        color: AppColors.secondaryLight,
-      ),
-      const SizedBox(width: 6),
+      if (icon != null) ...[
+        Icon(
+          icon,
+          size: compact ? 17 : 20,
+          color: AppColors.secondaryLight,
+        ),
+        const SizedBox(width: 6),
+      ],
       Text(
         title,
         style: compact
@@ -525,6 +529,8 @@ class WalkInInvoiceDetailsDialog extends StatefulWidget {
   final bool showOptionalPlateField;
   /// When true, renders only the form (for merged orders checkout dialog).
   final bool embedded;
+  /// Takeaway: Corporate selected → Customer name becomes corporate accounts dropdown.
+  final bool corporateNameAsDropdown;
 
   const WalkInInvoiceDetailsDialog({
     super.key,
@@ -534,6 +540,7 @@ class WalkInInvoiceDetailsDialog extends StatefulWidget {
     this.showVehicleSection = true,
     this.showOptionalPlateField = false,
     this.embedded = false,
+    this.corporateNameAsDropdown = false,
   }) : assert(
   order != null || standaloneInitial != null,
   'Provide order or standaloneInitial',
@@ -554,6 +561,7 @@ class WalkInInvoiceDetailsDialogState extends State<WalkInInvoiceDetailsDialog> 
   late final TextEditingController _vinCtrl;
   late final TextEditingController _odoCtrl;
   final _formKey = GlobalKey<FormState>();
+  String? _selectedCorporateAccountId;
 
   /// GCC plate country selected in the Vehicle section. Mirrors the
   /// "Add New Order" flow: defaults to Saudi but the user may switch to any
@@ -834,6 +842,77 @@ class WalkInInvoiceDetailsDialogState extends State<WalkInInvoiceDetailsDialog> 
     if (_plateCountryCode == 'SA') {
       _vehicleKind = _inferVehicleKindFromSaudiPlate(_plateCtrl.text);
     }
+    if (widget.corporateNameAsDropdown) {
+      _ensureCorporateAccountsLoaded();
+      _tryMatchCorporateFromName();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant WalkInInvoiceDetailsDialog oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.corporateNameAsDropdown && !oldWidget.corporateNameAsDropdown) {
+      _ensureCorporateAccountsLoaded();
+      _tryMatchCorporateFromName();
+    } else if (!widget.corporateNameAsDropdown &&
+        oldWidget.corporateNameAsDropdown) {
+      // Switching Corporate → Individual: clear fields so corporate data
+      // does not stay in the free-text Individual form.
+      clearCustomerIdentityFields();
+    }
+  }
+
+  /// Clears name / mobile / VAT (and corporate selection) for Individual mode.
+  void clearCustomerIdentityFields() {
+    setState(() {
+      _selectedCorporateAccountId = null;
+      _nameCtrl.clear();
+      _mobileCtrl.clear();
+      _vatCtrl.clear();
+      _invoiceHistoryUiToken++;
+    });
+  }
+
+  void _ensureCorporateAccountsLoaded() {
+    widget.posVm.fetchCorporateAccounts(silent: true);
+  }
+
+  void _tryMatchCorporateFromName() {
+    final name = _nameCtrl.text.trim().toLowerCase();
+    if (name.isEmpty) return;
+    final accounts = widget.posVm.corporateAccounts;
+    for (final a in accounts) {
+      if (a.companyName.trim().toLowerCase() == name ||
+          (a.posContactName ?? '').trim().toLowerCase() == name) {
+        _selectedCorporateAccountId = a.id;
+        return;
+      }
+    }
+  }
+
+  List<CashierCorporateAccount> _dedupeCorporateAccounts(
+    List<CashierCorporateAccount> accounts,
+  ) {
+    final seen = <String>{};
+    final out = <CashierCorporateAccount>[];
+    for (final a in accounts) {
+      final id = a.id.trim();
+      if (id.isEmpty || !seen.add(id)) continue;
+      out.add(a);
+    }
+    return out;
+  }
+
+  void _applyCorporateAccount(CashierCorporateAccount acct) {
+    final company = acct.companyName.trim();
+    final contact = (acct.posContactName ?? '').trim();
+    setState(() {
+      _selectedCorporateAccountId = acct.id;
+      _nameCtrl.text = company.isNotEmpty ? company : contact;
+      _mobileCtrl.text = _walkInInvoiceMobileDisplay(acct.posContactPhone ?? '');
+      _vatCtrl.text = (acct.effectiveVatNumber ?? '').trim();
+      _invoiceHistoryUiToken++;
+    });
   }
 
   @override
@@ -1059,6 +1138,152 @@ class WalkInInvoiceDetailsDialogState extends State<WalkInInvoiceDetailsDialog> 
                 ? AppLocalizations.of(context)!.posInvoiceDetailsRequired
                 : null,
       ),
+    );
+  }
+
+  Widget _walkInInvoiceCorporateNameDropdown() {
+    final l10n = AppLocalizations.of(context)!;
+    // Same as filled TextFormField value text.
+    final fieldStyle = _kWalkInInvoiceDialogFieldStyle.copyWith(
+      color: Colors.grey.shade900,
+      height: 1.25,
+    );
+    // Same as empty TextFormField floating label (VAT / Plate placeholders).
+    final emptyLabelStyle = TextStyle(
+      fontSize: 11.5,
+      fontWeight: FontWeight.w600,
+      color: Colors.grey.shade700,
+      height: 1.25,
+    );
+    return ListenableBuilder(
+      listenable: widget.posVm,
+      builder: (context, _) {
+        if (widget.posVm.isCorpAccountsLoading &&
+            widget.posVm.corporateAccounts.isEmpty) {
+          return InputDecorator(
+            decoration: _walkInInvoiceFieldDecoration(
+              l10n.posInvoiceDetailsCustomerName,
+              compact: true,
+            ),
+            child: const SizedBox(
+              height: 20,
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: PosShimmer(
+                  child: PosShimmerBox(width: 120, height: 13, radius: 6),
+                ),
+              ),
+            ),
+          );
+        }
+
+        final accounts =
+            _dedupeCorporateAccounts(widget.posVm.corporateAccounts);
+        final selectedId = _selectedCorporateAccountId;
+        final dropdownValue =
+            selectedId != null && accounts.any((a) => a.id == selectedId)
+                ? selectedId
+                : null;
+        final theme = Theme.of(context);
+
+        return Theme(
+          data: theme.copyWith(
+            // DropdownButton reads bodyLarge / titleMedium — force field font.
+            textTheme: theme.textTheme.copyWith(
+              bodyLarge: fieldStyle,
+              bodyMedium: fieldStyle,
+              titleMedium: fieldStyle,
+            ),
+          ),
+          child: DropdownButtonFormField<String>(
+            key: ValueKey('corp_name_$selectedId'),
+            value: dropdownValue,
+            isExpanded: true,
+            isDense: true,
+            style: fieldStyle,
+            iconSize: 20,
+            icon: Icon(
+              Icons.keyboard_arrow_down_rounded,
+              size: 20,
+              color: Colors.grey.shade500,
+            ),
+            decoration: _walkInInvoiceFieldDecoration(
+              l10n.posInvoiceDetailsCustomerName,
+              compact: true,
+            ),
+            hint: Text(
+              accounts.isEmpty
+                  ? l10n.posAddCustomerNoCorporateFound
+                  : l10n.posAddCustomerSelectCorporate,
+              style: emptyLabelStyle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            selectedItemBuilder: (context) {
+              return accounts
+                  .map(
+                    (corp) => Align(
+                      alignment: AlignmentDirectional.centerStart,
+                      child: Text(
+                        corp.companyName,
+                        style: fieldStyle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  )
+                  .toList();
+            },
+            items: accounts
+                .map(
+                  (corp) => DropdownMenuItem<String>(
+                    value: corp.id,
+                    child: Text(
+                      corp.companyName,
+                      style: fieldStyle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                )
+                .toList(),
+            validator: (_) {
+              if ((_selectedCorporateAccountId ?? '').trim().isEmpty ||
+                  _nameCtrl.text.trim().isEmpty) {
+                return l10n.posInvoiceDetailsRequired;
+              }
+              return null;
+            },
+            onChanged: accounts.isEmpty
+                ? null
+                : (value) {
+                    if (value == null) return;
+                    CashierCorporateAccount? match;
+                    for (final a in accounts) {
+                      if (a.id == value) {
+                        match = a;
+                        break;
+                      }
+                    }
+                    if (match == null) return;
+                    _applyCorporateAccount(match);
+                  },
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _walkInInvoiceCustomerNameField({
+    required bool isCorporateLocked,
+    required bool lockNameMobileFromEmployee,
+  }) {
+    if (widget.corporateNameAsDropdown) {
+      return _walkInInvoiceCorporateNameDropdown();
+    }
+    return _walkInInvoiceNamePlainField(
+      isCorporateLocked: isCorporateLocked,
+      lockNameMobileFromEmployee: lockNameMobileFromEmployee,
     );
   }
 
@@ -1338,7 +1563,10 @@ class WalkInInvoiceDetailsDialogState extends State<WalkInInvoiceDetailsDialog> 
     );
   }
 
-  Widget _walkInInvoiceKsaMakeModelRow({required bool vehicleFieldsLocked}) {
+  Widget _walkInInvoiceKsaMakeModelRow({
+    required bool vehicleFieldsLocked,
+    Widget? thirdChild,
+  }) {
     return PosKsaVehicleMakeModelRow(
       makeController: _makeCtrl,
       modelController: _modelCtrl,
@@ -1346,6 +1574,7 @@ class WalkInInvoiceDetailsDialogState extends State<WalkInInvoiceDetailsDialog> 
       fieldStyle: _kWalkInInvoiceDialogFieldStyle,
       readOnly: vehicleFieldsLocked,
       compact: true,
+      thirdChild: thirdChild,
     );
   }
 
@@ -1580,7 +1809,7 @@ class WalkInInvoiceDetailsDialogState extends State<WalkInInvoiceDetailsDialog> 
         children: [
             _walkInInvoiceSectionHeader(
               AppLocalizations.of(context)!.posReviewCustomerDetails,
-              Icons.person_outline_rounded,
+              null,
               compact: true,
             ),
             const SizedBox(height: 8),
@@ -1588,7 +1817,7 @@ class WalkInInvoiceDetailsDialogState extends State<WalkInInvoiceDetailsDialog> 
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: _walkInInvoiceNamePlainField(
+                  child: _walkInInvoiceCustomerNameField(
                     isCorporateLocked: isCorporateLocked,
                     lockNameMobileFromEmployee: false,
                   ),
@@ -1600,18 +1829,22 @@ class WalkInInvoiceDetailsDialogState extends State<WalkInInvoiceDetailsDialog> 
                     lockNameMobileFromEmployee: false,
                   ),
                 ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextFormField(
+                    controller: _vatCtrl,
+                    readOnly: isCorporateLocked,
+                    style: _kWalkInInvoiceDialogFieldStyle,
+                    decoration: _walkInInvoiceFieldDecoration(
+                      AppLocalizations.of(context)!.posInvoiceDetailsVat,
+                      optional: true,
+                      optionalSuffix:
+                          AppLocalizations.of(context)!.posSalesReturnOptional,
+                      compact: true,
+                    ),
+                  ),
+                ),
               ],
-            ),
-            const SizedBox(height: 8),
-            TextFormField(
-              controller: _vatCtrl,
-              readOnly: isCorporateLocked,
-              style: _kWalkInInvoiceDialogFieldStyle,
-              decoration: _walkInInvoiceFieldDecoration(
-                AppLocalizations.of(context)!.posInvoiceDetailsVat,
-                optional: true, optionalSuffix: AppLocalizations.of(context)!.posSalesReturnOptional,
-                compact: true,
-              ),
             ),
             if (widget.showOptionalPlateField && !widget.showVehicleSection) ...[
               const SizedBox(height: 8),
@@ -1632,7 +1865,7 @@ class WalkInInvoiceDetailsDialogState extends State<WalkInInvoiceDetailsDialog> 
               const SizedBox(height: 14),
               _walkInInvoiceSectionHeader(
                 AppLocalizations.of(context)!.posReviewVehicle,
-                Icons.directions_car_outlined,
+                null,
                 compact: true,
               ),
               const SizedBox(height: 8),
@@ -1683,36 +1916,30 @@ class WalkInInvoiceDetailsDialogState extends State<WalkInInvoiceDetailsDialog> 
                       keyboardType: TextInputType.number,
                     ),
                   ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              _walkInInvoiceKsaMakeModelRow(
-                vehicleFieldsLocked: vehicleFieldsLocked,
-              ),
-              const SizedBox(height: 8),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
+                  const SizedBox(width: 8),
                   Expanded(
                     child: _walkInInvoiceYearAutocompleteField(
                       vehicleFieldsLocked: vehicleFieldsLocked,
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: TextFormField(
-                      controller: _vinCtrl,
-                      readOnly: vehicleFieldsLocked,
-                      style: _kWalkInInvoiceDialogFieldStyle,
-                      decoration: _walkInInvoiceFieldDecoration(
-                        AppLocalizations.of(context)!.posInvoiceDetailsVin,
-                        optional: true, optionalSuffix: AppLocalizations.of(context)!.posSalesReturnOptional,
-                        compact: true,
-                      ),
-                      textCapitalization: TextCapitalization.characters,
-                    ),
-                  ),
                 ],
+              ),
+              const SizedBox(height: 8),
+              _walkInInvoiceKsaMakeModelRow(
+                vehicleFieldsLocked: vehicleFieldsLocked,
+                thirdChild: TextFormField(
+                  controller: _vinCtrl,
+                  readOnly: vehicleFieldsLocked,
+                  style: _kWalkInInvoiceDialogFieldStyle,
+                  decoration: _walkInInvoiceFieldDecoration(
+                    AppLocalizations.of(context)!.posInvoiceDetailsVin,
+                    optional: true,
+                    optionalSuffix:
+                        AppLocalizations.of(context)!.posSalesReturnOptional,
+                    compact: true,
+                  ),
+                  textCapitalization: TextCapitalization.characters,
+                ),
               ),
               const SizedBox(height: 6),
             ],
@@ -2238,7 +2465,7 @@ class _PosOrderReviewViewState extends State<PosOrderReviewView> {
   Future<bool> _runSoftPosBridgeIfNeeded({
     required List<Map<String, dynamic>>? paymentSplits,
   }) async {
-    if (_isCorporate == true || paymentSplits == null) return true;
+    if (paymentSplits == null) return true;
 
     final order = widget.order;
     final customer = order.customer;
@@ -3429,49 +3656,47 @@ class _PosOrderReviewViewState extends State<PosOrderReviewView> {
 
     // 3. Validate split amounts sum when 2+ methods selected
     List<Map<String, dynamic>>? paymentSplits;
-    if (_isCorporate != true) {
-      if (_isBranchEmployeeRetailWalkIn && _isCorporate == false) {
-        final eid = (_inlineBillingEmployeePickSelection?.id ?? '').trim();
-        if (eid.isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Select the branch employee customer first.')),
-          );
-          return;
-        }
-        paymentSplits = <Map<String, dynamic>>[
-          {
-            'method': PaymentMethod.employees.label,
-            'amount': _totalAmount,
-            'employeeIds': <String>[eid],
-          },
-        ];
-      } else if (_selectedPayments.length == 1) {
-        paymentSplits = [
-          _paymentSplitLine(_selectedPayments.first, _totalAmount),
-        ];
-      } else {
-        double splitSum = 0;
-        for (final c in _splitControllers.values) {
-          splitSum += double.tryParse(c.text.trim()) ?? 0.0;
-        }
-        if ((splitSum - _totalAmount).abs() > 0.05) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                AppLocalizations.of(context)!.posReviewSplitAmountsMustEqual(
-                    AppTranslationService.localizeDigitsForLanguage(_totalAmount.toStringAsFixed(2), Localizations.localeOf(context).languageCode),
-                    AppTranslationService.localizeDigitsForLanguage(splitSum.toStringAsFixed(2), Localizations.localeOf(context).languageCode)),
-              ),
-            ),
-          );
-          return;
-        }
-        paymentSplits = _selectedPayments.map((pm) {
-          final amt =
-              double.tryParse(_splitControllers[pm]?.text.trim() ?? '') ?? 0.0;
-          return _paymentSplitLine(pm, amt);
-        }).toList();
+    if (_isBranchEmployeeRetailWalkIn && _isCorporate == false) {
+      final eid = (_inlineBillingEmployeePickSelection?.id ?? '').trim();
+      if (eid.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Select the branch employee customer first.')),
+        );
+        return;
       }
+      paymentSplits = <Map<String, dynamic>>[
+        {
+          'method': PaymentMethod.employees.label,
+          'amount': _totalAmount,
+          'employeeIds': <String>[eid],
+        },
+      ];
+    } else if (_selectedPayments.length == 1) {
+      paymentSplits = [
+        _paymentSplitLine(_selectedPayments.first, _totalAmount),
+      ];
+    } else if (_selectedPayments.length > 1) {
+      double splitSum = 0;
+      for (final c in _splitControllers.values) {
+        splitSum += double.tryParse(c.text.trim()) ?? 0.0;
+      }
+      if ((splitSum - _totalAmount).abs() > 0.05) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              AppLocalizations.of(context)!.posReviewSplitAmountsMustEqual(
+                  AppTranslationService.localizeDigitsForLanguage(_totalAmount.toStringAsFixed(2), Localizations.localeOf(context).languageCode),
+                  AppTranslationService.localizeDigitsForLanguage(splitSum.toStringAsFixed(2), Localizations.localeOf(context).languageCode)),
+            ),
+          ),
+        );
+        return;
+      }
+      paymentSplits = _selectedPayments.map((pm) {
+        final amt =
+            double.tryParse(_splitControllers[pm]?.text.trim() ?? '') ?? 0.0;
+        return _paymentSplitLine(pm, amt);
+      }).toList();
     }
 
     // 4. Validate inline billing form for walk-in orders
@@ -3522,11 +3747,11 @@ class _PosOrderReviewViewState extends State<PosOrderReviewView> {
       );
     }
 
-    // 5. SoftPOS bridge (Tap to Pay → separate SoftPOS app on LAN).
+    // 5. SoftPOS bridge (Tap to Pay → SoftPOS handset). Retail + corporate.
     // Skip entirely when SoftPOS already prepaid this order.
-    if (_isCorporate != true &&
-        paymentSplits != null &&
-        !widget.order.isPosPrepaid) {
+    if (paymentSplits != null &&
+        !widget.order.isPosPrepaid &&
+        SoftPosBridge.splitsIncludeSoftPos(paymentSplits)) {
       if (!await SoftPosConnectionGuard.ensureStableOrToast(context)) return;
       final softPosOk = await _runSoftPosBridgeIfNeeded(
         paymentSplits: paymentSplits,
@@ -3548,15 +3773,14 @@ class _PosOrderReviewViewState extends State<PosOrderReviewView> {
         widget.order.id,
         orderForBilling: widget.order,
         isCorporate: _isCorporate,
-        paymentMethod: _isCorporate == true
-            ? (_selectedPayments.isNotEmpty
-            ? _selectedPayments.first.label
-            : AppLocalizations.of(context)!.posPaymentCorporate)
-            : (paymentSplits != null && paymentSplits.length == 1
+        paymentMethod: paymentSplits != null && paymentSplits.length == 1
             ? paymentSplits.first['method'] as String?
-            : null),
-        payments:
-        _isCorporate != true && paymentSplits != null ? paymentSplits : null,
+            : (_isCorporate == true
+                ? (_selectedPayments.isNotEmpty
+                    ? _selectedPayments.first.label
+                    : AppLocalizations.of(context)!.posPaymentCorporate)
+                : null),
+        payments: paymentSplits,
       );
 
       if (!mounted) return;
@@ -4261,8 +4485,7 @@ class _PosOrderReviewViewState extends State<PosOrderReviewView> {
                     listenable: SoftPosAccessService.instance,
                     builder: (context, _) {
                       if (!isSoftPosUiEnabled ||
-                          _isBranchEmployeeRetailWalkIn ||
-                          _isCorporate == true) {
+                          _isBranchEmployeeRetailWalkIn) {
                         return const SizedBox.shrink();
                       }
                       return Column(
@@ -5092,37 +5315,55 @@ class _PaymentMethodSelector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (corporateMonthlyOnly) {
-      const corporateMethods = <PaymentMethod>[
-        PaymentMethod.monthlyBilling,
-        PaymentMethod.bankTransfer,
-        PaymentMethod.cash,
-        PaymentMethod.card,
-        PaymentMethod.wallet,
-      ];
-      return Wrap(
-        spacing: 10,
-        runSpacing: 10,
-        children: corporateMethods.map((pm) {
-          final isSelected = selected.contains(pm);
-          return GestureDetector(
-            onTap: () => onChanged({pm}),
-            child: _methodChip(
-              pm,
-              isSelected: isSelected,
-              isDisabled: false,
-            ),
+      return ListenableBuilder(
+        listenable: SoftPosAccessService.instance,
+        builder: (context, _) {
+          final corporateMethods = <PaymentMethod>[
+            PaymentMethod.monthlyBilling,
+            PaymentMethod.bankTransfer,
+            PaymentMethod.cash,
+            PaymentMethod.card,
+            if (isSoftPosUiEnabled) PaymentMethod.tapToPay,
+            PaymentMethod.wallet,
+          ].where(isPosPaymentMethodUiEnabled).toList();
+          final blocked = selected
+              .where((pm) => !isPosPaymentMethodUiEnabled(pm))
+              .toList();
+          if (blocked.isNotEmpty) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              final next = Set<PaymentMethod>.of(selected)
+                ..removeAll(blocked);
+              onChanged(next);
+            });
+          }
+          return Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: corporateMethods.map((pm) {
+              final isSelected = selected.contains(pm);
+              return GestureDetector(
+                onTap: () => onChanged({pm}),
+                child: _methodChip(
+                  pm,
+                  isSelected: isSelected,
+                  isDisabled: false,
+                ),
+              );
+            }).toList(),
           );
-        }).toList(),
+        },
       );
     }
 
     return ListenableBuilder(
       listenable: SoftPosAccessService.instance,
       builder: (context, _) {
-        if (!isSoftPosUiEnabled && selected.contains(PaymentMethod.tapToPay)) {
+        final blocked = selected
+            .where((pm) => !isPosPaymentMethodUiEnabled(pm))
+            .toList();
+        if (blocked.isNotEmpty) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            final next = Set<PaymentMethod>.of(selected)
-              ..remove(PaymentMethod.tapToPay);
+            final next = Set<PaymentMethod>.of(selected)..removeAll(blocked);
             onChanged(next);
           });
         }
@@ -5131,8 +5372,7 @@ class _PaymentMethodSelector extends StatelessWidget {
           runSpacing: 10,
           children: PaymentMethod.values
               .where((pm) =>
-                  pm.isRetailSelectable &&
-                  (pm != PaymentMethod.tapToPay || isSoftPosUiEnabled))
+                  pm.isRetailSelectable && isPosPaymentMethodUiEnabled(pm))
               .map((pm) {
             final isSelected = selected.contains(pm);
             return GestureDetector(

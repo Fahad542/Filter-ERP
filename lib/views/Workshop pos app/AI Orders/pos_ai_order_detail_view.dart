@@ -4,7 +4,9 @@ import 'package:provider/provider.dart';
 
 import '../../../models/cashier_ai_order_model.dart';
 import '../../../utils/app_colors.dart';
+import '../../../utils/pos_tablet_layout.dart';
 import '../../../utils/toast_service.dart';
+import '../../../widgets/pos_shimmer.dart';
 import '../../../widgets/pos_widgets.dart';
 import 'ai_orders_view_model.dart';
 
@@ -23,7 +25,8 @@ class _PosAiOrderDetailViewState extends State<PosAiOrderDetailView> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      context.read<AiOrdersViewModel>().loadDetail(widget.aiOrderId);
+      // Cache-first so screen paints immediately; API refresh is silent.
+      context.read<AiOrdersViewModel>().openDetail(widget.aiOrderId);
     });
   }
 
@@ -81,6 +84,7 @@ class _PosAiOrderDetailViewState extends State<PosAiOrderDetailView> {
                     style: TextStyle(
                       fontSize: 17,
                       fontWeight: FontWeight.w800,
+                      color: AppColors.secondaryLight,
                     ),
                   ),
                   const SizedBox(height: 4),
@@ -112,7 +116,10 @@ class _PosAiOrderDetailViewState extends State<PosAiOrderDetailView> {
                             style: const TextStyle(fontWeight: FontWeight.w700),
                           ),
                           subtitle: Text(subtitle),
-                          trailing: const Icon(Icons.link_rounded),
+                          trailing: const Icon(
+                            Icons.link_rounded,
+                            color: AppColors.secondaryLight,
+                          ),
                           onTap: () => Navigator.pop(ctx, o),
                         );
                       },
@@ -136,29 +143,42 @@ class _PosAiOrderDetailViewState extends State<PosAiOrderDetailView> {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<AiOrdersViewModel>(
-      builder: (context, vm, _) {
-        final order = vm.selectedOrder;
-        final title = order?.displayPlate ?? 'AI Order';
-        return Scaffold(
-          backgroundColor: const Color(0xFFF8F9FD),
-          appBar: PosScreenAppBar(
-            title: title,
-            showNotificationIcon: false,
-          ),
-          body: vm.isDetailLoading && order == null
-              ? const Center(child: CircularProgressIndicator())
-              : vm.detailError != null && order == null
-                  ? Center(child: Text(vm.detailError!))
-                  : order == null
-                      ? const Center(child: Text('Order not found'))
-                      : _buildContent(vm, order),
-        );
-      },
+    final isTablet = MediaQuery.of(context).size.width > 600;
+    return MediaQuery(
+      data: MediaQuery.of(context).copyWith(
+        textScaler: PosTabletLayout.textScaler(context),
+      ),
+      child: Consumer<AiOrdersViewModel>(
+        builder: (context, vm, _) {
+          final order = vm.selectedOrder;
+          final title = order?.displayPlate ?? 'AI Order';
+          return Scaffold(
+            backgroundColor: AppColors.backgroundLight,
+            appBar: PosScreenAppBar(
+              title: title,
+              showNotificationIcon: false,
+            ),
+            body: vm.isDetailLoading && order == null
+                ? const _DetailShimmer()
+                : vm.detailError != null && order == null
+                    ? _ErrorBody(
+                        message: vm.detailError!,
+                        onRetry: () => vm.openDetail(widget.aiOrderId),
+                      )
+                    : order == null
+                        ? const Center(child: Text('Order not found'))
+                        : _buildBody(vm, order, isTablet: isTablet),
+          );
+        },
+      ),
     );
   }
 
-  Widget _buildContent(AiOrdersViewModel vm, AiOrderCashier order) {
+  Widget _buildBody(
+    AiOrdersViewModel vm,
+    AiOrderCashier order, {
+    required bool isTablet,
+  }) {
     final canAck = order.isUnbilledAlert ||
         (order.status == 'CONFIRMED' &&
             order.cashierAcknowledgedAt == null &&
@@ -167,115 +187,378 @@ class _PosAiOrderDetailViewState extends State<PosAiOrderDetailView> {
         order.status != 'EXPIRED' &&
         order.cashierOrderId == null;
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+    return Column(
       children: [
-        _headerCard(order),
-        const SizedBox(height: 12),
-        _infoCard(order),
-        const SizedBox(height: 12),
-        _bayTimeline(order),
-        if (order.linkedSalesOrder != null) ...[
-          const SizedBox(height: 12),
-          _linkedOrderCard(order.linkedSalesOrder!),
-        ],
-        const SizedBox(height: 20),
-        if (vm.isActionBusy)
-          const Center(child: CircularProgressIndicator())
-        else
-          Row(
+        Expanded(
+          child: ListView(
+            padding: EdgeInsets.fromLTRB(
+              isTablet ? 20 : 14,
+              12,
+              isTablet ? 20 : 14,
+              16,
+            ),
             children: [
-              if (canAck)
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => _acknowledge(vm),
-                    icon: const Icon(Icons.check_circle_outline),
-                    label: const Text('Acknowledge'),
-                  ),
-                ),
-              if (canAck && canLink) const SizedBox(width: 10),
-              if (canLink)
-                Expanded(
-                  child: FilledButton.icon(
-                    onPressed: () => _linkToPos(vm),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: AppColors.primaryLight,
-                      foregroundColor: Colors.black,
+              _OverviewCard(order: order),
+              const SizedBox(height: 10),
+              _SectionCard(
+                title: 'Details',
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: _DetailTile(
+                        label: 'Entrance',
+                        value: _fmt(order.entranceDetectedAt),
+                      ),
                     ),
-                    icon: const Icon(Icons.link_rounded),
-                    label: const Text('Link to POS'),
-                  ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _DetailTile(
+                        label: 'First service bay',
+                        value: _fmt(order.firstServiceBayAt),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _DetailTile(
+                        label: 'Minutes since bay',
+                        value: order.minutesSinceFirstBay != null
+                            ? '${order.minutesSinceFirstBay}'
+                            : '—',
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _DetailTile(
+                        label: 'Grace (min)',
+                        value: order.unbilledGraceMinutes != null
+                            ? '${order.unbilledGraceMinutes}'
+                            : '—',
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _DetailTile(
+                        label: 'Confidence',
+                        value: order.confidence != null
+                            ? '${(order.confidence! * 100).toStringAsFixed(1)}%'
+                            : '—',
+                      ),
+                    ),
+                    if (order.entranceCameraName != null) ...[
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _DetailTile(
+                          label: 'Entrance camera',
+                          value: order.entranceCameraName!,
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
+              ),
+              const SizedBox(height: 10),
+              _SectionCard(
+                title: 'Service bay timeline',
+                child: order.serviceBayEvents.isEmpty
+                    ? Text(
+                        'No bay detections yet',
+                        style: TextStyle(
+                          color: Colors.grey.shade600,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      )
+                    : _BayTimelineGrid(
+                        events: order.serviceBayEvents,
+                        fmt: _fmt,
+                      ),
+              ),
+              if (order.linkedSalesOrder != null) ...[
+                const SizedBox(height: 10),
+                _LinkedOrderCard(linked: order.linkedSalesOrder!),
+              ],
             ],
+          ),
+        ),
+        if (canAck || canLink)
+          _BottomActions(
+            busy: vm.isActionBusy,
+            canAck: canAck,
+            canLink: canLink,
+            onAcknowledge: () => _acknowledge(vm),
+            onLink: () => _linkToPos(vm),
           ),
       ],
     );
   }
+}
 
-  Widget _headerCard(AiOrderCashier order) {
+class _BottomActions extends StatelessWidget {
+  const _BottomActions({
+    required this.busy,
+    required this.canAck,
+    required this.canLink,
+    required this.onAcknowledge,
+    required this.onLink,
+  });
+
+  final bool busy;
+  final bool canAck;
+  final bool canLink;
+  final VoidCallback onAcknowledge;
+  final VoidCallback onLink;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.white,
+      elevation: 8,
+      shadowColor: Colors.black26,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+          child: busy
+              ? const SizedBox(
+                  height: 48,
+                  child: Center(
+                    child: SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(strokeWidth: 2.4),
+                    ),
+                  ),
+                )
+              : Row(
+                  children: [
+                    if (canAck)
+                      Expanded(
+                        child: SizedBox(
+                          height: 48,
+                          child: FilledButton(
+                            onPressed: onAcknowledge,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: AppColors.secondaryLight,
+                              foregroundColor: AppColors.onSecondaryLight,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            child: const Text(
+                              'Acknowledge',
+                              style: TextStyle(fontWeight: FontWeight.w800),
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (canAck && canLink) const SizedBox(width: 10),
+                    if (canLink)
+                      Expanded(
+                        child: SizedBox(
+                          height: 48,
+                          child: FilledButton(
+                            onPressed: onLink,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: AppColors.primaryLight,
+                              foregroundColor: AppColors.onPrimaryLight,
+                              elevation: 0,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            child: const Text(
+                              'Link to POS',
+                              style: TextStyle(fontWeight: FontWeight.w800),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _OverviewCard extends StatelessWidget {
+  const _OverviewCard({required this.order});
+
+  final AiOrderCashier order;
+
+  @override
+  Widget build(BuildContext context) {
+    final alert = order.isUnbilledAlert;
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: order.isUnbilledAlert
-              ? Colors.red.shade200
-              : order.isCompanyVehicle
-                  ? Colors.indigo.shade200
-                  : Colors.grey.shade200,
+          color: order.isCompanyVehicle
+              ? const Color(0xFFC7D2FE)
+              : Colors.grey.shade100,
         ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.02),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                order.displayPlate,
-                style: const TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 0.5,
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: AppColors.primaryLight,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: const Icon(
+                  Icons.directions_car_rounded,
+                  color: AppColors.secondaryLight,
+                  size: 22,
                 ),
               ),
-              const Spacer(),
-              Text(
-                order.status,
-                style: TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: Colors.grey.shade800,
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      order.displayPlate,
+                      style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 0.4,
+                        color: AppColors.secondaryLight,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      order.captureNo,
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
                 ),
               ),
+              // Unbilled alert immediately before CONFIRMED / status.
+              if (alert) ...[
+                _MiniChip(
+                  'Unbilled alert',
+                  bg: const Color(0xFFFEF2F2),
+                  fg: const Color(0xFFB91C1C),
+                ),
+                const SizedBox(width: 6),
+              ],
+              _StatusPill(status: order.status),
             ],
           ),
-          const SizedBox(height: 6),
-          Text(
-            order.captureNo,
-            style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
-          ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 6,
-            children: [
-              if (order.isCompanyVehicle) _chip('Company vehicle', Colors.indigo),
-              if (order.isUnbilledAlert) _chip('Unbilled alert', Colors.red),
-              if (order.hasOpenPosOrder) _chip('Open POS', Colors.green),
-              if (order.cashierAcknowledgedAt != null)
-                _chip('Acknowledged', Colors.blueGrey),
-            ],
-          ),
+          if (order.isCompanyVehicle ||
+              order.hasOpenPosOrder ||
+              order.cashierAcknowledgedAt != null) ...[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                if (order.isCompanyVehicle)
+                  _MiniChip(
+                    'Company vehicle',
+                    bg: const Color(0xFFEEF2FF),
+                    fg: const Color(0xFF4338CA),
+                  ),
+                if (order.hasOpenPosOrder)
+                  _MiniChip(
+                    'Open POS',
+                    bg: const Color(0xFFECFDF5),
+                    fg: const Color(0xFF15803D),
+                  ),
+                if (order.cashierAcknowledgedAt != null)
+                  _MiniChip(
+                    'Acknowledged',
+                    bg: const Color(0xFFF1F5F9),
+                    fg: const Color(0xFF475569),
+                  ),
+              ],
+            ),
+          ],
         ],
       ),
     );
   }
+}
 
-  Widget _chip(String label, MaterialColor color) {
+class _StatusPill extends StatelessWidget {
+  const _StatusPill({required this.status});
+
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    Color fg;
+    Color bg;
+    switch (status) {
+      case 'CONFIRMED':
+        fg = const Color(0xFFB48A14);
+        bg = const Color(0xFFFFF9EC);
+      case 'MATCHED':
+        fg = const Color(0xFF15803D);
+        bg = const Color(0xFFECFDF5);
+      case 'UNMATCHED':
+        fg = const Color(0xFFB91C1C);
+        bg = const Color(0xFFFFF5F5);
+      case 'EXPIRED':
+        fg = const Color(0xFF64748B);
+        bg = const Color(0xFFF8FAFC);
+      default:
+        fg = const Color(0xFF475569);
+        bg = const Color(0xFFF1F5F9);
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        status,
+        style: TextStyle(
+          fontWeight: FontWeight.w800,
+          fontSize: 11,
+          letterSpacing: 0.3,
+          color: fg,
+        ),
+      ),
+    );
+  }
+}
+
+class _MiniChip extends StatelessWidget {
+  const _MiniChip(this.label, {required this.bg, required this.fg});
+
+  final String label;
+  final Color bg;
+  final Color fg;
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: color.shade50,
+        color: bg,
         borderRadius: BorderRadius.circular(8),
       ),
       child: Text(
@@ -283,141 +566,221 @@ class _PosAiOrderDetailViewState extends State<PosAiOrderDetailView> {
         style: TextStyle(
           fontSize: 11,
           fontWeight: FontWeight.w700,
-          color: color.shade800,
+          color: fg,
         ),
       ),
     );
   }
+}
 
-  Widget _infoCard(AiOrderCashier order) {
+class _SectionCard extends StatelessWidget {
+  const _SectionCard({required this.title, required this.child});
+
+  final String title;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Column(
-        children: [
-          _kv('Entrance', _fmt(order.entranceDetectedAt)),
-          _kv('First service bay', _fmt(order.firstServiceBayAt)),
-          if (order.minutesSinceFirstBay != null)
-            _kv('Minutes since bay', '${order.minutesSinceFirstBay}'),
-          if (order.unbilledGraceMinutes != null)
-            _kv('Grace (min)', '${order.unbilledGraceMinutes}'),
-          if (order.entranceCameraName != null)
-            _kv('Entrance camera', order.entranceCameraName!),
-          if (order.confidence != null)
-            _kv(
-              'Confidence',
-              '${(order.confidence! * 100).toStringAsFixed(1)}%',
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _kv(String k, String v) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 5),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 140,
-            child: Text(
-              k,
-              style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              v,
-              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-            ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.grey.shade100),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.02),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _bayTimeline(AiOrderCashier order) {
-    final events = order.serviceBayEvents;
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Service bay timeline',
-            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
-          ),
-          const SizedBox(height: 10),
-          if (events.isEmpty)
-            Text(
-              'No bay detections yet',
-              style: TextStyle(color: Colors.grey.shade600),
-            )
-          else
-            ...events.map((e) {
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(Icons.place_outlined,
-                        size: 18, color: Colors.grey.shade700),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            e.departmentName ?? 'Bay',
-                            style: const TextStyle(fontWeight: FontWeight.w700),
-                          ),
-                          Text(
-                            '${_fmt(e.detectedAt)}'
-                            '${e.cameraName != null ? ' · ${e.cameraName}' : ''}',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.grey.shade600,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            }),
-        ],
-      ),
-    );
-  }
-
-  Widget _linkedOrderCard(AiOrderLinkedSalesOrder linked) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.green.shade50,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.green.shade200),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
+            title,
+            style: const TextStyle(
+              fontWeight: FontWeight.w800,
+              fontSize: 15,
+              color: AppColors.secondaryLight,
+            ),
+          ),
+          const SizedBox(height: 10),
+          child,
+        ],
+      ),
+    );
+  }
+}
+
+class _DetailTile extends StatelessWidget {
+  const _DetailTile({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            color: Colors.grey.shade600,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 3),
+        Text(
+          value,
+          style: const TextStyle(
+            fontWeight: FontWeight.w700,
+            fontSize: 13,
+            color: AppColors.secondaryLight,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _BayTimelineGrid extends StatelessWidget {
+  const _BayTimelineGrid({
+    required this.events,
+    required this.fmt,
+  });
+
+  final List<AiOrderBayEvent> events;
+  final String Function(DateTime?) fmt;
+
+  @override
+  Widget build(BuildContext context) {
+    const perRow = 3;
+    final rows = <Widget>[];
+    for (var i = 0; i < events.length; i += perRow) {
+      final slice = events.skip(i).take(perRow).toList();
+      rows.add(
+        Padding(
+          padding: EdgeInsets.only(bottom: i + perRow < events.length ? 10 : 0),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (var c = 0; c < perRow; c++) ...[
+                if (c > 0) const SizedBox(width: 8),
+                Expanded(
+                  child: c < slice.length
+                      ? _BayEventRow(
+                          title: slice[c].departmentName ?? 'Bay',
+                          subtitle:
+                              '${fmt(slice[c].detectedAt)}${slice[c].cameraName != null ? ' · ${slice[c].cameraName}' : ''}',
+                        )
+                      : const SizedBox.shrink(),
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
+    }
+    return Column(children: rows);
+  }
+}
+
+class _BayEventRow extends StatelessWidget {
+  const _BayEventRow({required this.title, required this.subtitle});
+
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: AppColors.secondaryLight,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: const Icon(
+            Icons.place_outlined,
+            size: 14,
+            color: AppColors.primaryLight,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12,
+                  color: AppColors.secondaryLight,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                subtitle,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey.shade600,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _LinkedOrderCard extends StatelessWidget {
+  const _LinkedOrderCard({required this.linked});
+
+  final AiOrderLinkedSalesOrder linked;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFECFDF5),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFA7F3D0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
             'Linked POS order',
             style: TextStyle(
               fontWeight: FontWeight.w800,
-              color: Colors.green.shade900,
+              color: Color(0xFF166534),
             ),
           ),
           const SizedBox(height: 6),
-          Text('Order #${linked.id}'),
+          Text(
+            'Order #${linked.id}',
+            style: const TextStyle(
+              fontWeight: FontWeight.w700,
+              color: AppColors.secondaryLight,
+            ),
+          ),
           if (linked.customerName != null) Text(linked.customerName!),
           if (linked.invoiceNo != null) Text('Invoice ${linked.invoiceNo}'),
           if (linked.status != null)
@@ -427,6 +790,122 @@ class _PosAiOrderDetailViewState extends State<PosAiOrderDetailView> {
             ),
         ],
       ),
+    );
+  }
+}
+
+class _ErrorBody extends StatelessWidget {
+  const _ErrorBody({required this.message, required this.onRetry});
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.error_outline_rounded,
+                size: 40, color: Colors.grey.shade400),
+            const SizedBox(height: 10),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.grey.shade600,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 14),
+            SizedBox(
+              width: 160,
+              height: 42,
+              child: ElevatedButton(
+                onPressed: onRetry,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primaryLight,
+                  foregroundColor: AppColors.onPrimaryLight,
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: const Text(
+                  'Retry',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DetailShimmer extends StatelessWidget {
+  const _DetailShimmer();
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.grey.shade100),
+          ),
+          child: const PosShimmer(
+            child: Row(
+              children: [
+                PosShimmerBox(width: 42, height: 42, radius: 12),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      PosShimmerBox(width: 120, height: 16, radius: 6),
+                      SizedBox(height: 8),
+                      PosShimmerBox(width: 160, height: 10, radius: 5),
+                    ],
+                  ),
+                ),
+                PosShimmerBox(width: 72, height: 22, radius: 999),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.grey.shade100),
+          ),
+          child: const PosShimmer(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                PosShimmerBox(width: 80, height: 14, radius: 6),
+                SizedBox(height: 12),
+                PosShimmerBox(width: double.infinity, height: 12, radius: 5),
+                SizedBox(height: 8),
+                PosShimmerBox(width: double.infinity, height: 12, radius: 5),
+                SizedBox(height: 8),
+                PosShimmerBox(width: 180, height: 12, radius: 5),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

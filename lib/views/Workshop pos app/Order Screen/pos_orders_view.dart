@@ -76,7 +76,7 @@ bool _shouldShowOrdersHubFullEmptyState(PosViewModel vm) =>
     vm.ordersApiFetchCompleted && !vm.hasCashierOrdersFromApi;
 
 /// Fixed width of the ORDER SUMMARY column (Orders Hub landscape). Slightly under the old 392px so department cards get more room.
-const double _kPosOrdersHubSummaryColumnWidth = 332.0;
+const double _kPosOrdersHubSummaryColumnWidth = 360.0;
 
 /// Matches [WalkInInvoiceDetailsDialog] / Final Review: walk-in PATCH allowed (not cashier corporate-quote lockout).
 bool _ordersWalkInBillingEditable(PosOrder order) =>
@@ -1570,49 +1570,62 @@ class _OrdersPaymentStatusBanner extends StatelessWidget {
 
     final l10n = AppLocalizations.of(context)!;
     final amount = order.posPrepaidAmount ?? grandTotal;
-    final method = order.prepaidPaymentMethodLabel.trim();
+    final diff = amount - grandTotal;
+    final settled = diff.abs() <= 0.05;
+    // Settled / paid in full → hide banner (only over/under shown).
+    if (settled) return const SizedBox.shrink();
+
+    final overpaid = diff > 0.05;
+    final String statusLabel;
+    final Color accent;
+    final Color fill;
+    final Color border;
+    if (overpaid) {
+      statusLabel = 'OVERPAID';
+      accent = const Color(0xFF2E7D32);
+      fill = const Color(0xFFE8F5E9);
+      border = const Color(0xFF81C784);
+    } else {
+      statusLabel = 'UNDER PAID';
+      accent = const Color(0xFFC62828);
+      fill = const Color(0xFFFFEBEE);
+      border = const Color(0xFFEF9A9A);
+    }
+
+    // Show only how much is over/under (not total received).
+    final statusAmount = diff.abs();
+    final amountText = AppTranslationService.localizeDigitsForLanguage(
+      statusAmount.toStringAsFixed(2),
+      Localizations.localeOf(context).languageCode,
+    );
 
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFFE8F5E9),
+        color: fill,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF81C784)),
+        border: Border.all(color: border),
       ),
       child: Row(
         children: [
-          const Icon(
-            Icons.check_circle,
-            color: Color(0xFF2E7D32),
-            size: 16,
-          ),
-          const SizedBox(width: 6),
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  l10n.billingStatusPaid.toUpperCase(),
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w900,
-                    fontSize: 11,
-                    letterSpacing: 0.3,
-                    color: Color(0xFF1B5E20),
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  method.isNotEmpty
-                      ? '${l10n.posOrdersPaidAmount(amount.toStringAsFixed(2))} · ${l10n.posOrdersPaidVia(method)}'
-                      : l10n.posOrdersPaidAmount(amount.toStringAsFixed(2)),
-                  style: TextStyle(
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.green.shade900,
-                  ),
-                ),
-              ],
+            child: Text(
+              statusLabel,
+              style: TextStyle(
+                fontWeight: FontWeight.w900,
+                fontSize: 11,
+                letterSpacing: 0.3,
+                color: accent,
+              ),
+            ),
+          ),
+          Text(
+            '$amountText ${l10n.posCommonSar}',
+            style: TextStyle(
+              fontWeight: FontWeight.w800,
+              fontSize: 12,
+              color: accent,
             ),
           ),
         ],
@@ -1621,7 +1634,7 @@ class _OrdersPaymentStatusBanner extends StatelessWidget {
   }
 }
 
-/// Edit customer + maintenance checklist (same row in order summary footer).
+/// Fixed bottom actions: Edit customer · Select payment · Maintenance checklist.
 class _OrdersHeaderCustomerPaymentRow extends StatelessWidget {
   final PosViewModel vm;
   final PosOrder order;
@@ -1658,94 +1671,94 @@ class _OrdersHeaderCustomerPaymentRow extends StatelessWidget {
             order.isWaitingCorporateApproval ||
             order.isRejectedByCorporate);
 
-    Future<void> openCheckoutDetails() async {
+    Future<void> openCheckoutDetails({required bool withPayment}) async {
       if (order == null || invoicingThisOrder) return;
-      final lockPayment = paymentSelectionLocked || order.isPosPrepaid;
+      // Received SoftPOS amount stays locked on the order; payment methods
+      // stay selectable until Generate Invoice so cashier can collect more.
+      final lockPayment = paymentSelectionLocked;
+      final showPayment = withPayment && showPaymentMethodButton;
       final saved = await applyOrdersCheckoutDetailsDialog(
         context: context,
         order: order,
         posVm: posVm,
-        showPaymentSection: showPaymentMethodButton,
+        showPaymentSection: showPayment,
         paymentSelectionLocked: lockPayment,
       );
       if (!context.mounted || !saved) return;
       ToastService.showSuccess(
         context,
-        lockPayment || !showPaymentMethodButton
+        lockPayment || !showPayment
             ? AppLocalizations.of(context)!.posOrdersCustomerDetailsSaved
             : AppLocalizations.of(context)!.posOrdersCheckoutSaved,
       );
     }
 
-    final canOpen = enabled &&
+    final canOpenCustomer = enabled &&
         !invoicingThisOrder &&
-        !isRejectedCorporateOrder &&
-        (!showPaymentMethodButton || !corporateBillingLocked);
+        !isRejectedCorporateOrder;
+    final canOpenPayment = canOpenCustomer &&
+        showPaymentMethodButton &&
+        !corporateBillingLocked;
 
-    final checklistEnabled = !posVm.isLoading && !invoicingThisOrder;
+    Widget primaryBtn({
+      required String label,
+      required VoidCallback? onPressed,
+      Color backgroundColor = AppColors.primaryLight,
+      Color foregroundColor = AppColors.onPrimaryLight,
+    }) {
+      return SizedBox(
+        height: 44,
+        child: ElevatedButton(
+          onPressed: onPressed,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: backgroundColor,
+            foregroundColor: foregroundColor,
+            disabledBackgroundColor: const Color(0xFFE8ECF3),
+            disabledForegroundColor: const Color(0xFF94A3B8),
+            elevation: 0,
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+          ),
+          child: Text(
+            label,
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              height: 1.15,
+              color: onPressed == null
+                  ? const Color(0xFF94A3B8)
+                  : foregroundColor,
+            ),
+          ),
+        ),
+      );
+    }
 
+    final l10n = AppLocalizations.of(context)!;
+    // Checklist lives on the Generate Invoice row (Order Summary).
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         Expanded(
-          child: SizedBox(
-            height: 40,
-            child: ElevatedButton(
-              onPressed: canOpen ? openCheckoutDetails : null,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.primaryLight,
-                foregroundColor: AppColors.onPrimaryLight,
-                disabledBackgroundColor: const Color(0xFFE8ECF3),
-                disabledForegroundColor: const Color(0xFF94A3B8),
-                elevation: 0,
-                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              child: Text(
-                AppLocalizations.of(context)!.posOrdersEditCustomerDetails,
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w800,
-                  height: 1.15,
-                  color: AppColors.onPrimaryLight,
-                ),
-              ),
-            ),
+          child: primaryBtn(
+            label: l10n.posOrdersSelectPaymentMethod,
+            onPressed: canOpenPayment
+                ? () => openCheckoutDetails(withPayment: true)
+                : null,
           ),
         ),
         const SizedBox(width: 8),
         Expanded(
-          child: SizedBox(
-            height: 40,
-            child: OutlinedButton(
-              onPressed: checklistEnabled
-                  ? () => _showOrdersMaintenanceChecklistDialog(context, order)
-                  : null,
-              style: OutlinedButton.styleFrom(
-                foregroundColor: AppColors.secondaryLight,
-                side: BorderSide(color: Colors.blueGrey.shade400),
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 8),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              child: Text(
-                AppLocalizations.of(context)!.posOrdersChecklistOptional,
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w800,
-                  color: AppColors.secondaryLight,
-                ),
-              ),
-            ),
+          child: primaryBtn(
+            label: l10n.posOrdersEditCustomerDetails,
+            onPressed: canOpenCustomer
+                ? () => openCheckoutDetails(withPayment: false)
+                : null,
           ),
         ),
       ],
@@ -2150,11 +2163,9 @@ class _OrderDetailPanel extends StatelessWidget {
           Expanded(
             child: LayoutBuilder(
               builder: (context, constraints) {
-                const pad = EdgeInsets.fromLTRB(18, 10, 18, 18);
+                const pad = EdgeInsets.fromLTRB(18, 10, 18, 12);
                 const crossSpacing = 12.0;
                 const runSpacing = 12.0;
-                final innerW = constraints.maxWidth - pad.horizontal;
-                final tileW = (innerW - crossSpacing) / 2;
                 final showAdd = _canAddDepartmentToOrder(order);
                 final hasRealJobs =
                 order.jobs.any((j) => !j.isCancelledJob);
@@ -4329,7 +4340,7 @@ Future<void> _requestPaymentFromOrdersSummary(
 
   final isRetailEmployee = _ordersIsRetailWalkInBranchEmployee(vm, payOrder);
   bool? isCorporate;
-  late final List<Map<String, dynamic>> paymentSplits;
+  late List<Map<String, dynamic>> paymentSplits;
 
   if (isRetailEmployee) {
     final eid = _ordersBranchEmployeeIdForPayroll(vm, payOrder);
@@ -4389,7 +4400,8 @@ Future<void> _requestPaymentFromOrdersSummary(
         0,
         (s, p) => s + ((p['amount'] as num).toDouble()),
       );
-      if ((splitSum - orderTotal).abs() > 0.05) {
+      // Underpay blocked; overpay is checked only on Generate Invoice.
+      if (splitSum + 0.05 < orderTotal) {
         ToastService.showError(
           context,
           l10n.posOrdersSplitAmountsMustEqualTotal(orderTotal.toStringAsFixed(2)),
@@ -4475,122 +4487,32 @@ Future<void> _generateInvoiceFromOrdersSummaryImpl(
 
   final totalAmount = invoiceOrder.draftPosOrderPayableDisplay;
 
+  // Prepaid SoftPOS must cover (equal or over) the invoice total.
   if (invoiceOrder.isPosPrepaid &&
-      !invoiceOrder.canInvoiceWithPrepaidMismatch(totalAmount)) {
+      !invoiceOrder.prepaidCoversInvoiceTotal(totalAmount)) {
+    final paid = invoiceOrder.posPrepaidAmount ?? 0;
+    final short = (totalAmount - paid).clamp(0.0, double.infinity);
     ToastService.showError(
       context,
-      AppLocalizations.of(context)!.posOrdersPrepaidAmountMismatch(
-        (invoiceOrder.posPrepaidAmount ?? 0).toStringAsFixed(2),
-      ),
+      'Order is underpaid. Invoice total is SAR ${totalAmount.toStringAsFixed(2)} but only SAR ${paid.toStringAsFixed(2)} received (short by SAR ${short.toStringAsFixed(2)}). Collect the remaining amount before generating the invoice.',
     );
     return;
   }
-
-  // SoftPOS app-bar: warn when order total ≠ customer paid (still allow invoice).
-  if (invoiceOrder.isSoftPosAppBarPrepaid &&
-      !invoiceOrder.prepaidAmountMatchesTotal(totalAmount)) {
+  if (invoiceOrder.isPosPrepaid &&
+      (invoiceOrder.posPrepaidAmount ?? 0) - totalAmount > 0.05) {
     final paid = invoiceOrder.posPrepaidAmount ?? 0;
-    final diff = totalAmount - paid;
-    final over = diff > 0.05;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      barrierColor: Colors.black.withValues(alpha: 0.4),
-      builder: (ctx) {
-        final l10n = AppLocalizations.of(ctx)!;
-        final body = over
-            ? 'You are generating an invoice for SAR ${totalAmount.toStringAsFixed(2)}, but the customer paid SAR ${paid.toStringAsFixed(2)} via SoftPOS (under by SAR ${diff.abs().toStringAsFixed(2)}). Continue?'
-            : 'You are generating an invoice for SAR ${totalAmount.toStringAsFixed(2)}, but the customer paid SAR ${paid.toStringAsFixed(2)} via SoftPOS (over by SAR ${diff.abs().toStringAsFixed(2)}). Continue?';
-        return Dialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-          elevation: 0,
-          backgroundColor: Colors.white,
-          child: Container(
-            width: 400,
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 26),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  'Payment amount mismatch',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 19,
-                    fontWeight: FontWeight.w900,
-                    color: AppColors.secondaryLight,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  body,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Colors.grey,
-                    fontSize: 13,
-                    height: 1.5,
-                  ),
-                ),
-                const SizedBox(height: 22),
-                Row(
-                  children: [
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () => Navigator.pop(ctx, false),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.secondaryLight,
-                          foregroundColor: Colors.white,
-                          elevation: 0,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        child: Text(
-                          l10n.posCommonCancel,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () => Navigator.pop(ctx, true),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppColors.primaryLight,
-                          foregroundColor: AppColors.secondaryLight,
-                          elevation: 0,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        child: Text(
-                          l10n.posOrdersGenerateInvoice,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w800,
-                            color: AppColors.secondaryLight,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
-      },
+    final extra = paid - totalAmount;
+    ToastService.showError(
+      context,
+      'Order is overpaid. Invoice total is SAR ${totalAmount.toStringAsFixed(2)} but SAR ${paid.toStringAsFixed(2)} was received (over by SAR ${extra.toStringAsFixed(2)}). Received amount cannot be more than the invoice total.',
     );
-    if (!context.mounted) return;
-    if (confirmed != true) return;
+    return;
   }
 
   final isRetailEmployee = _ordersIsRetailWalkInBranchEmployee(vm, invoiceOrder);
   bool? isCorporate;
   Set<PaymentMethod> methodsForDialogLabel = {};
-  late final List<Map<String, dynamic>> paymentSplits;
+  late List<Map<String, dynamic>> paymentSplits;
 
   if (isRetailEmployee) {
     final eid = _ordersBranchEmployeeIdForPayroll(vm, invoiceOrder);
@@ -4619,7 +4541,7 @@ Future<void> _generateInvoiceFromOrdersSummaryImpl(
         order: invoiceOrder,
         posVm: vm,
         showPaymentSection: true,
-        paymentSelectionLocked: invoiceOrder.isPosPrepaid,
+        paymentSelectionLocked: false,
       );
       if (!context.mounted) return;
       if (!saved || !vm.walkInBillingReadyForInvoice(invoiceOrder)) {
@@ -4638,10 +4560,12 @@ Future<void> _generateInvoiceFromOrdersSummaryImpl(
     }
     isCorporate = vm.invoicePaymentIsCorporate;
     final methods = vm.invoicePaymentMethods;
+    // Already received (≥ invoice total, incl. overpay): always invoice from
+    // prepaid rows. Draft split amounts in the VM can be stale/short and were
+    // wrongly blocking Generate Invoice with "Split amounts must equal total".
     if (invoiceOrder.isPosPrepaid &&
-        (isCorporate == null || methods.isEmpty)) {
-      // SoftPOS already paid — rebuild splits from prepaid rows if VM draft is empty.
-      isCorporate = false;
+        invoiceOrder.prepaidCoversInvoiceTotal(totalAmount)) {
+      isCorporate ??= false;
       final prepaidRows =
           invoiceOrder.posPrepaidPayments ?? invoiceOrder.posPayments;
       if (prepaidRows != null && prepaidRows.isNotEmpty) {
@@ -4658,8 +4582,48 @@ Future<void> _generateInvoiceFromOrdersSummaryImpl(
             if (parsePaymentMethodFromDraftApiLabel(r.method) != null)
               parsePaymentMethodFromDraftApiLabel(r.method)!,
         };
+        if (methodsForDialogLabel.isEmpty && methods.isNotEmpty) {
+          methodsForDialogLabel = methods;
+        }
         if (methodsForDialogLabel.isEmpty) {
           methodsForDialogLabel = {PaymentMethod.tapToPay};
+        }
+      } else if (methods.isNotEmpty) {
+        // No prepaid row breakdown — use selected methods, amounts = total
+        // (overpay already verified via posPrepaidAmount).
+        methodsForDialogLabel = methods;
+        if (methods.length == 1) {
+          paymentSplits = <Map<String, dynamic>>[
+            <String, dynamic>{
+              'method': methods.first.label,
+              'amount': totalAmount,
+            },
+          ];
+        } else {
+          final prepaidTotal = invoiceOrder.posPrepaidAmount ?? totalAmount;
+          final amounts = vm.invoicePaymentAmounts;
+          paymentSplits = methods
+              .map(
+                (m) => <String, dynamic>{
+                  'method': m.label,
+                  'amount': (amounts[m] ?? 0),
+                },
+              )
+              .where((p) => (p['amount'] as num) > 0)
+              .toList();
+          final draftSum = paymentSplits.fold<double>(
+            0,
+            (s, p) => s + ((p['amount'] as num).toDouble()),
+          );
+          // Prefer actual received total if draft is empty/short.
+          if (draftSum + 0.05 < totalAmount) {
+            paymentSplits = <Map<String, dynamic>>[
+              <String, dynamic>{
+                'method': methods.first.label,
+                'amount': prepaidTotal,
+              },
+            ];
+          }
         }
       } else {
         paymentSplits = <Map<String, dynamic>>[
@@ -4669,6 +4633,18 @@ Future<void> _generateInvoiceFromOrdersSummaryImpl(
           },
         ];
         methodsForDialogLabel = {PaymentMethod.tapToPay};
+      }
+      final receivedSum = paymentSplits.fold<double>(
+        0,
+        (s, p) => s + ((p['amount'] as num?)?.toDouble() ?? 0),
+      );
+      if (receivedSum - totalAmount > 0.05) {
+        final extra = receivedSum - totalAmount;
+        ToastService.showError(
+          context,
+          'Order is overpaid. Invoice total is SAR ${totalAmount.toStringAsFixed(2)} but SAR ${receivedSum.toStringAsFixed(2)} was received (over by SAR ${extra.toStringAsFixed(2)}). Received amount cannot be more than the invoice total.',
+        );
+        return;
       }
     } else if (isCorporate == null || methods.isEmpty) {
       ToastService.showError(context, l10n.posOrdersSelectYourPaymentMethod);
@@ -4700,7 +4676,12 @@ Future<void> _generateInvoiceFromOrdersSummaryImpl(
         if ((splitSum - totalAmount).abs() > 0.05) {
           ToastService.showError(
             context,
-            AppLocalizations.of(context)!.posOrdersSplitAmountsMustEqualTotal(totalAmount.toStringAsFixed(2)),
+            splitSum - totalAmount > 0.05
+                ? 'Received amount cannot be more than the invoice total (SAR ${totalAmount.toStringAsFixed(2)}). Currently SAR ${splitSum.toStringAsFixed(2)}.'
+                : AppLocalizations.of(context)!
+                    .posOrdersSplitAmountsMustEqualTotal(
+                    totalAmount.toStringAsFixed(2),
+                  ),
           );
           return;
         }
@@ -4708,9 +4689,10 @@ Future<void> _generateInvoiceFromOrdersSummaryImpl(
     }
   }
 
-  // Only ping SoftPOS when payment still needs collecting on the terminal.
+  // SoftPOS only when Tap to Pay is in splits (retail + corporate).
   // Already SoftPOS-paid orders (app-bar / prepaid) must never block invoice.
-  if (isCorporate != true && !alreadySoftPosPaid) {
+  if (!alreadySoftPosPaid &&
+      SoftPosBridge.splitsIncludeSoftPos(paymentSplits)) {
     if (!await SoftPosConnectionGuard.ensureStableOrToast(context)) return;
     final snap = vm.walkInBillingSnapshotForOrder(invoiceOrder.id);
     try {
@@ -5044,11 +5026,7 @@ Widget? _orderSummaryAddPromoBanner(
   final promoCode = appliedPromoName.trim();
   final hasPromo = promoCode.isNotEmpty;
   final busy = vm.isOrderPromoMutationInFlight;
-  final paidLocked = order.isPosPrepaid;
-
-  void toastPaid() {
-    ToastService.showInfo(context, 'This order is already paid');
-  }
+  // Stay enabled even after advance / SoftPOS receive — total can still change.
 
   Widget? closeChild;
   if (hasPromo && busy) {
@@ -5062,59 +5040,49 @@ Widget? _orderSummaryAddPromoBanner(
     );
   } else if (hasPromo) {
     closeChild = GestureDetector(
-      onTap: paidLocked
-          ? toastPaid
-          : () => _confirmAndRemoveOrderPromo(
-                context,
-                vm: vm,
-                order: order,
-                promoCode: promoCode,
-              ),
-      child: Opacity(
-        opacity: paidLocked ? 0.45 : 1,
-        child: Container(
-          width: 18,
-          height: 18,
-          decoration: const BoxDecoration(
-            color: AppColors.secondaryLight,
-            shape: BoxShape.circle,
-          ),
-          child: const Icon(Icons.close, size: 12, color: Colors.white),
+      onTap: () => _confirmAndRemoveOrderPromo(
+        context,
+        vm: vm,
+        order: order,
+        promoCode: promoCode,
+      ),
+      child: Container(
+        width: 18,
+        height: 18,
+        decoration: const BoxDecoration(
+          color: AppColors.secondaryLight,
+          shape: BoxShape.circle,
         ),
+        child: const Icon(Icons.close, size: 12, color: Colors.white),
       ),
     );
   }
 
-  return Opacity(
-    opacity: paidLocked && !hasPromo ? 0.55 : 1,
-    child: _orderSummaryCodeChip(
-      backgroundColor:
-          hasPromo ? _kOrderSummaryAppliedChipBg : _kOrderSummaryCodeChipBg,
-      borderColor: hasPromo
-          ? _kOrderSummaryAppliedChipBorder
-          : const Color(0xFFFFC145).withValues(alpha: 0.6),
-      leading: Icon(
-        Icons.local_offer_outlined,
-        size: 14,
-        color: hasPromo ? Colors.green.shade700 : Colors.amber.shade700,
-      ),
-      label: hasPromo
-          ? '${loc.posProductPromoPrefix} $promoCode'
-          : loc.posProductAddPromoCode,
-      labelColor: hasPromo ? Colors.green.shade700 : const Color(0xFF1E2124),
-      labelWeight: localeFontWeight(context, FontWeight.w700),
-      onTap: busy
-          ? null
-          : paidLocked
-              ? toastPaid
-              : () => _openOrderSummaryPromoDialog(
-                    context,
-                    vm: vm,
-                    order: order,
-                    appliedPromoName: promoCode,
-                  ),
-      trailingClose: closeChild,
+  return _orderSummaryCodeChip(
+    backgroundColor:
+        hasPromo ? _kOrderSummaryAppliedChipBg : _kOrderSummaryCodeChipBg,
+    borderColor: hasPromo
+        ? _kOrderSummaryAppliedChipBorder
+        : const Color(0xFFFFC145).withValues(alpha: 0.6),
+    leading: Icon(
+      Icons.local_offer_outlined,
+      size: 14,
+      color: hasPromo ? Colors.green.shade700 : Colors.amber.shade700,
     ),
+    label: hasPromo
+        ? '${loc.posProductPromoPrefix} $promoCode'
+        : loc.posProductAddPromoCode,
+    labelColor: hasPromo ? Colors.green.shade700 : const Color(0xFF1E2124),
+    labelWeight: localeFontWeight(context, FontWeight.w700),
+    onTap: busy
+        ? null
+        : () => _openOrderSummaryPromoDialog(
+              context,
+              vm: vm,
+              order: order,
+              appliedPromoName: promoCode,
+            ),
+    trailingClose: closeChild,
   );
 }
 
@@ -5141,11 +5109,7 @@ Widget? _orderSummaryAddReferralBanner(
   }
 
   final busy = vm.isOrderReferralMutationInFlight;
-  final paidLocked = order.isPosPrepaid;
-
-  void toastPaid() {
-    ToastService.showInfo(context, 'This order is already paid');
-  }
+  // Stay enabled even after advance / SoftPOS receive — total can still change.
 
   Widget? closeChild;
   if (hasCode && busy) {
@@ -5159,64 +5123,54 @@ Widget? _orderSummaryAddReferralBanner(
     );
   } else if (hasCode) {
     closeChild = GestureDetector(
-      onTap: paidLocked
-          ? toastPaid
-          : () async {
-              final ok = await vm.removeReferralCodeFromOrder(order);
-              if (!context.mounted) return;
-              if (!ok) {
-                ToastService.showError(
-                  context,
-                  vm.errorMessage ??
-                      (isAr ? 'تعذر إزالة الرمز' : 'Failed to remove referral'),
-                );
-              }
-            },
-      child: Opacity(
-        opacity: paidLocked ? 0.45 : 1,
-        child: Container(
-          width: 18,
-          height: 18,
-          decoration: const BoxDecoration(
-            color: AppColors.secondaryLight,
-            shape: BoxShape.circle,
-          ),
-          child: const Icon(Icons.close, size: 12, color: Colors.white),
+      onTap: () async {
+        final ok = await vm.removeReferralCodeFromOrder(order);
+        if (!context.mounted) return;
+        if (!ok) {
+          ToastService.showError(
+            context,
+            vm.errorMessage ??
+                (isAr ? 'تعذر إزالة الرمز' : 'Failed to remove referral'),
+          );
+        }
+      },
+      child: Container(
+        width: 18,
+        height: 18,
+        decoration: const BoxDecoration(
+          color: AppColors.secondaryLight,
+          shape: BoxShape.circle,
         ),
+        child: const Icon(Icons.close, size: 12, color: Colors.white),
       ),
     );
   }
 
-  return Opacity(
-    opacity: paidLocked && !hasCode ? 0.55 : 1,
-    child: _orderSummaryCodeChip(
-      backgroundColor:
-          hasCode ? _kOrderSummaryAppliedChipBg : _kOrderSummaryCodeChipBg,
-      borderColor: hasCode
-          ? _kOrderSummaryAppliedChipBorder
-          : AppColors.primaryLight.withValues(alpha: 0.7),
-      leading: Icon(
-        Icons.person_add_alt_1_outlined,
-        size: 14,
-        color: hasCode ? Colors.green.shade700 : Colors.amber.shade700,
-      ),
-      label: hasCode
-          ? (isAr ? 'إحالة: $code' : 'Referral: $code')
-          : (isAr ? 'إضافة رمز إحالة' : 'Add referral code'),
-      labelColor: hasCode ? Colors.green.shade700 : const Color(0xFF1E2124),
-      labelWeight: localeFontWeight(context, FontWeight.w700),
-      onTap: busy
-          ? null
-          : paidLocked
-              ? toastPaid
-              : () => ReferralCodeDialog.show(
-                    context,
-                    order: order,
-                    orderAmountInclVat: orderAmountInclVat,
-                    appliedReferralCode: code,
-                  ),
-      trailingClose: closeChild,
+  return _orderSummaryCodeChip(
+    backgroundColor:
+        hasCode ? _kOrderSummaryAppliedChipBg : _kOrderSummaryCodeChipBg,
+    borderColor: hasCode
+        ? _kOrderSummaryAppliedChipBorder
+        : AppColors.primaryLight.withValues(alpha: 0.7),
+    leading: Icon(
+      Icons.person_add_alt_1_outlined,
+      size: 14,
+      color: hasCode ? Colors.green.shade700 : Colors.amber.shade700,
     ),
+    label: hasCode
+        ? (isAr ? 'إحالة: $code' : 'Referral: $code')
+        : (isAr ? 'إضافة رمز إحالة' : 'Add referral code'),
+    labelColor: hasCode ? Colors.green.shade700 : const Color(0xFF1E2124),
+    labelWeight: localeFontWeight(context, FontWeight.w700),
+    onTap: busy
+        ? null
+        : () => ReferralCodeDialog.show(
+              context,
+              order: order,
+              orderAmountInclVat: orderAmountInclVat,
+              appliedReferralCode: code,
+            ),
+    trailingClose: closeChild,
   );
 }
 
@@ -5242,8 +5196,6 @@ class _OrderSummaryPanel extends StatelessWidget {
         totalJobs > 0 && completedJobs == totalJobs;
     final meetsPrereq = order.meetsCashierInvoicePrerequisites;
     final billingOk = vm.walkInBillingReadyForInvoice(order);
-    final hideRetailPaymentPicker =
-    _ordersIsRetailWalkInBranchEmployee(vm, order);
     // Same rule as payment: only block invoicing for corporate **walk-in** while waiting on
     // corporate approval (or rejected). Do not require literal `corporate approved` status
     // (cashier orders often stay `in progress` / `completed` on jobs while invoice is due).
@@ -5283,12 +5235,12 @@ class _OrderSummaryPanel extends StatelessWidget {
     final grandTotal = (grandTotalBeforeReferral - referralDiscountAmt)
         .clamp(0.0, double.infinity);
 
+    // Underpaid SoftPOS still allows the tap — Generate Invoice shows the
+    // insufficient-received popup instead of silently disabling the button.
     final canTapGenerateInvoice = allDepartmentsComplete &&
         meetsPrereq &&
         corporateApprovedForBilling &&
-        (!needsWalkInCustomerDetails || billingOk) &&
-        (!order.isPosPrepaid ||
-            order.canInvoiceWithPrepaidMismatch(grandTotal));
+        (!needsWalkInCustomerDetails || billingOk);
     // Request Payment removed — SoftPOS runs via Tap to Pay / SoftPOS app-bar send.
     const showRequestPaymentButton = false;
     const canTapRequestPayment = false;
@@ -5634,17 +5586,10 @@ class _OrderSummaryPanel extends StatelessWidget {
           const SizedBox(height: 8),
           _OrdersPaymentStatusBanner(order: order, grandTotal: grandTotal),
         ],
-        const SizedBox(height: 8),
-        _OrdersHeaderCustomerPaymentRow(
-          vm: vm,
-          order: order,
-          showPaymentMethodButton: !hideRetailPaymentPicker,
-          paymentSelectionLocked: order.isPosPrepaid,
-        ),
+        // Only under UNDER PAID — never under OVERPAID / settled.
         if (order.isPosPrepaid &&
-            !order.isSoftPosAppBarPrepaid &&
-            !order.prepaidAmountMatchesTotal(grandTotal)) ...[
-          const SizedBox(height: 8),
+            (order.posPrepaidAmount ?? 0) + 0.05 < grandTotal) ...[
+          const SizedBox(height: 6),
           Text(
             AppLocalizations.of(context)!.posOrdersPrepaidAmountMismatch(
               (order.posPrepaidAmount ?? 0).toStringAsFixed(2),
@@ -5656,98 +5601,128 @@ class _OrderSummaryPanel extends StatelessWidget {
             ),
           ),
         ],
-        if (showRequestPaymentButton ||
-            (allDepartmentsComplete && showGenerateInvoiceButton)) ...[
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              if (showRequestPaymentButton) ...[
+        const SizedBox(height: 8),
+        _OrdersHeaderCustomerPaymentRow(
+          vm: vm,
+          order: order,
+          showPaymentMethodButton:
+              !_ordersIsRetailWalkInBranchEmployee(vm, order),
+          paymentSelectionLocked: false,
+        ),
+        const SizedBox(height: 8),
+        // Checklist + Generate Invoice share one row.
+        Consumer<PosViewModel>(
+          builder: (context, posVm, _) {
+            final invoicingThisOrder = posVm.isInvoicingOrder(order.id);
+            final checklistEnabled =
+                !posVm.isLoading && !invoicingThisOrder;
+            final showGenerate =
+                allDepartmentsComplete && showGenerateInvoiceButton;
+            return Row(
+              children: [
                 Expanded(
-                  child: Consumer<PosViewModel>(
-                    builder: (context, posVm, _) {
-                      final requesting =
-                          posVm.isRequestingPaymentFor(order.id);
-                      return SizedBox(
-                        height: 40,
-                        child: OutlinedButton(
-                          onPressed: canTapRequestPayment && !requesting
-                              ? () => _requestPaymentFromOrdersSummary(
-                                    context,
-                                    posVm,
-                                    order,
-                                    grandTotal,
-                                  )
-                              : null,
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: AppColors.secondaryLight,
-                            side: BorderSide(
-                              color: AppColors.secondaryLight.withValues(alpha: 0.35),
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 2,
-                              vertical: 0,
-                            ),
-                            minimumSize: Size.zero,
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            visualDensity: VisualDensity.compact,
-                          ),
-                          child: requesting
-                              ? AppButtonBusy.loaderOnFill(
-                                  AppColors.secondaryLight,
-                                  size: 18,
-                                )
-                              : LayoutBuilder(
-                                  builder: (context, constraints) {
-                                    final label = AppLocalizations.of(context)!
-                                        .posOrdersRequestPayment
-                                        .replaceAll(' ', '\u00A0');
-                                    return SizedBox(
-                                      width: constraints.maxWidth,
-                                      child: FittedBox(
-                                        fit: BoxFit.scaleDown,
-                                        alignment: Alignment.center,
-                                        child: Text(
-                                          label,
-                                          textAlign: TextAlign.center,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.visible,
-                                          softWrap: false,
-                                          style: const TextStyle(
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w800,
-                                            height: 1,
-                                          ),
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                ),
+                  child: SizedBox(
+                    height: 40,
+                    child: OutlinedButton(
+                      onPressed: checklistEnabled
+                          ? () => _showOrdersMaintenanceChecklistDialog(
+                                context,
+                                order,
+                              )
+                          : null,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.secondaryLight,
+                        disabledForegroundColor: const Color(0xFF94A3B8),
+                        side: BorderSide(
+                          color: checklistEnabled
+                              ? Colors.blueGrey.shade400
+                              : const Color(0xFFE8ECF3),
                         ),
-                      );
-                    },
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 7,
+                        ),
+                      ),
+                      child: Text(
+                        AppLocalizations.of(context)!
+                            .posOrdersChecklistOptional,
+                        textAlign: TextAlign.center,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w800,
+                          color: checklistEnabled
+                              ? AppColors.secondaryLight
+                              : const Color(0xFF94A3B8),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
-                if (allDepartmentsComplete && showGenerateInvoiceButton)
+                if (showRequestPaymentButton) ...[
                   const SizedBox(width: 8),
-              ],
-              if (allDepartmentsComplete && showGenerateInvoiceButton)
-                Expanded(
-                child: Consumer<PosViewModel>(
-                  builder: (context, posVm, _) {
-                    final invoicingThisOrder = posVm.isInvoicingOrder(order.id);
-                    return SizedBox(
+                  Expanded(
+                    child: SizedBox(
                       height: 40,
-                      child: ElevatedButton(
-                        onPressed: canTapGenerateInvoice && !invoicingThisOrder
-                            ? () => _generateInvoiceFromOrdersSummary(
+                      child: OutlinedButton(
+                        onPressed: canTapRequestPayment &&
+                                !posVm.isRequestingPaymentFor(order.id)
+                            ? () => _requestPaymentFromOrdersSummary(
                                   context,
                                   posVm,
                                   order,
+                                  grandTotal,
                                 )
                             : null,
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: AppColors.secondaryLight,
+                          side: BorderSide(
+                            color: AppColors.secondaryLight
+                                .withValues(alpha: 0.35),
+                          ),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 2),
+                        ),
+                        child: posVm.isRequestingPaymentFor(order.id)
+                            ? AppButtonBusy.loaderOnFill(
+                                AppColors.secondaryLight,
+                                size: 18,
+                              )
+                            : Text(
+                                AppLocalizations.of(context)!
+                                    .posOrdersRequestPayment,
+                                textAlign: TextAlign.center,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                      ),
+                    ),
+                  ),
+                ],
+                if (showGenerate) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: SizedBox(
+                      height: 40,
+                      child: ElevatedButton(
+                        onPressed:
+                            canTapGenerateInvoice && !invoicingThisOrder
+                                ? () => _generateInvoiceFromOrdersSummary(
+                                      context,
+                                      posVm,
+                                      order,
+                                    )
+                                : null,
                         style: AppButtonBusy.elevatedLocked(
                           backgroundColor: AppColors.secondaryLight,
                           foregroundColor: AppColors.onSecondaryLight,
@@ -5778,13 +5753,13 @@ class _OrderSummaryPanel extends StatelessWidget {
                                 ),
                               ),
                       ),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        ],
+                    ),
+                  ),
+                ],
+              ],
+            );
+          },
+        ),
       ],
     );
 
@@ -6277,10 +6252,6 @@ Widget _orderStripStatusBadge(BuildContext context, PosOrder order, {required bo
       label = 'REJECTED';
     }
   }
-  // SoftPOS / prepaid — cashier needs a clear Paid signal on the list.
-  if (order.isPosPrepaid && label != 'COMPLETED') {
-    label = 'PAID';
-  }
   final Color fg;
   final Color bg;
 
@@ -6288,9 +6259,6 @@ Widget _orderStripStatusBadge(BuildContext context, PosOrder order, {required bo
   if (!isSelected) {
     fg = AppColors.secondaryLight;
     bg = AppColors.secondaryLight.withValues(alpha: 0.08);
-  } else if (label == 'PAID') {
-    fg = Colors.white;
-    bg = const Color(0xFF2E7D32);
   } else if (label == 'COMPLETED') {
     fg = Colors.white;
     bg = AppColors.secondaryLight;

@@ -19,6 +19,8 @@ Future<bool> showPosLogoutStyleConfirmDialog(
   required String body,
   required String confirmLabel,
   String? cancelLabel,
+  /// When true, Cancel is a filled secondary (dark) button instead of outlined.
+  bool cancelUsesSecondaryFill = false,
   Future<bool> Function()? onConfirm,
 }) {
   return showDialog<bool>(
@@ -30,6 +32,7 @@ Future<bool> showPosLogoutStyleConfirmDialog(
       body: body,
       confirmLabel: confirmLabel,
       cancelLabel: cancelLabel,
+      cancelUsesSecondaryFill: cancelUsesSecondaryFill,
       onConfirm: onConfirm,
     ),
   ).then((value) => value ?? false);
@@ -41,6 +44,7 @@ class _PosLogoutStyleConfirmDialog extends StatefulWidget {
     required this.body,
     required this.confirmLabel,
     this.cancelLabel,
+    this.cancelUsesSecondaryFill = false,
     this.onConfirm,
   });
 
@@ -48,6 +52,7 @@ class _PosLogoutStyleConfirmDialog extends StatefulWidget {
   final String body;
   final String confirmLabel;
   final String? cancelLabel;
+  final bool cancelUsesSecondaryFill;
   final Future<bool> Function()? onConfirm;
 
   @override
@@ -118,24 +123,49 @@ class _PosLogoutStyleConfirmDialogState
               Row(
                 children: [
                   Expanded(
-                    child: OutlinedButton(
-                      onPressed:
-                          _isBusy ? null : () => Navigator.of(context).pop(false),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        side: BorderSide(color: Colors.grey.shade300),
-                      ),
-                      child: Text(
-                        widget.cancelLabel ?? l10n.promoDeleteCancel,
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.secondaryLight,
-                        ),
-                      ),
-                    ),
+                    child: widget.cancelUsesSecondaryFill
+                        ? ElevatedButton(
+                            onPressed: _isBusy
+                                ? null
+                                : () => Navigator.of(context).pop(false),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.secondaryLight,
+                              foregroundColor: Colors.white,
+                              elevation: 0,
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            child: Text(
+                              widget.cancelLabel ?? l10n.promoDeleteCancel,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 13,
+                              ),
+                            ),
+                          )
+                        : OutlinedButton(
+                            onPressed: _isBusy
+                                ? null
+                                : () => Navigator.of(context).pop(false),
+                            style: OutlinedButton.styleFrom(
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              side: BorderSide(color: Colors.grey.shade300),
+                            ),
+                            child: Text(
+                              widget.cancelLabel ?? l10n.promoDeleteCancel,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.secondaryLight,
+                              ),
+                            ),
+                          ),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
@@ -353,6 +383,10 @@ class PosPrimaryDialogHeader extends StatelessWidget {
     this.onClose,
     this.showCatalogSync = false,
     this.catalogSyncDepartmentId,
+    this.roundBottom = true,
+    this.backgroundColor,
+    this.foregroundColor,
+    this.padding,
   });
 
   final String title;
@@ -360,32 +394,44 @@ class PosPrimaryDialogHeader extends StatelessWidget {
   final VoidCallback? onClose;
   final bool showCatalogSync;
   final String? catalogSyncDepartmentId;
+  /// When false, yellow header has square bottom edge (no curve into body).
+  final bool roundBottom;
+  /// Defaults to [AppColors.primaryLight]. Use transparent for flush dialogs.
+  final Color? backgroundColor;
+  final Color? foregroundColor;
+  final EdgeInsetsGeometry? padding;
 
   static const headerBottomRadius = 12.0;
 
   @override
   Widget build(BuildContext context) {
+    final bottomR = roundBottom ? headerBottomRadius : 0.0;
+    final bg = backgroundColor ?? AppColors.primaryLight;
+    final fg = foregroundColor ?? AppColors.onPrimaryLight;
     return Container(
       width: double.infinity,
-      decoration: const BoxDecoration(
-        color: AppColors.primaryLight,
+      decoration: BoxDecoration(
+        color: bg,
         borderRadius: BorderRadius.only(
-          bottomLeft: Radius.circular(headerBottomRadius),
-          bottomRight: Radius.circular(headerBottomRadius),
+          bottomLeft: Radius.circular(bottomR),
+          bottomRight: Radius.circular(bottomR),
         ),
       ),
-      padding: EdgeInsetsDirectional.fromSTEB(
-        isTablet ? 8 : 6,
-        isTablet ? 7 : 5,
-        isTablet ? 0 : 0,
-        isTablet ? 7 : 5,
-      ),
+      padding: padding ??
+          EdgeInsetsDirectional.fromSTEB(
+            isTablet ? 8 : 6,
+            isTablet ? 7 : 5,
+            isTablet ? 0 : 0,
+            isTablet ? 7 : 5,
+          ),
       child: Stack(
         alignment: Alignment.center,
         children: [
           Padding(
             padding: EdgeInsetsDirectional.symmetric(
-              horizontal: showCatalogSync ? (isTablet ? 112 : 96) : 36,
+              horizontal: showCatalogSync
+                  ? (isTablet ? 112 : 96)
+                  : (onClose != null ? 36 : 12),
             ),
             child: LocalizedApiText(
               title,
@@ -396,34 +442,37 @@ class PosPrimaryDialogHeader extends StatelessWidget {
                 fontSize: isTablet ? 16 : 14,
                 fontWeight: FontWeight.w800,
                 height: 1.15,
-                color: AppColors.onPrimaryLight,
+                color: fg,
                 letterSpacing: -0.2,
               ),
             ),
           ),
-          Align(
-            alignment: AlignmentDirectional.centerEnd,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (showCatalogSync)
-                  PosCatalogSyncAppBarButton(
-                    catalogDepartmentId: catalogSyncDepartmentId,
-                  ),
-                IconButton(
-                  tooltip: MaterialLocalizations.of(context).closeButtonTooltip,
-                  icon: const Icon(Icons.close_rounded, size: 18),
-                  color: AppColors.onPrimaryLight,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(
-                    minWidth: 28,
-                    minHeight: 28,
-                  ),
-                  onPressed: onClose,
-                ),
-              ],
+          if (showCatalogSync || onClose != null)
+            Align(
+              alignment: AlignmentDirectional.centerEnd,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (showCatalogSync)
+                    PosCatalogSyncAppBarButton(
+                      catalogDepartmentId: catalogSyncDepartmentId,
+                    ),
+                  if (onClose != null)
+                    IconButton(
+                      tooltip:
+                          MaterialLocalizations.of(context).closeButtonTooltip,
+                      icon: const Icon(Icons.close_rounded, size: 18),
+                      color: fg,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 28,
+                        minHeight: 28,
+                      ),
+                      onPressed: onClose,
+                    ),
+                ],
+              ),
             ),
-          ),
         ],
       ),
     );

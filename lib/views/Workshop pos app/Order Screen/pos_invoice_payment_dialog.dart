@@ -1,15 +1,20 @@
+import 'dart:async';
 import 'dart:math' show min;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../../models/pos_payment_method.dart';
-import '../../../utils/app_colors.dart';
-import '../../../utils/app_keyboard_locale.dart';
 import '../../../l10n/app_localizations.dart';
+import '../../../models/order_payment_method_draft.dart';
+import '../../../models/pos_order_model.dart';
+import '../../../models/pos_payment_method.dart';
 import '../../../services/locker_translation_mixin.dart';
 import '../../../services/softpos_access_service.dart';
+import '../../../utils/app_button_busy.dart';
+import '../../../utils/app_colors.dart';
+import '../../../utils/app_keyboard_locale.dart';
 import '../../../utils/toast_service.dart';
+import 'pos_orders_hub_dialog.dart';
 
 /// Optional handler to persist PAY draft to `PATCH …/payment-method` before closing.
 typedef InvoicePaymentDraftPersistFn = Future<String?> Function(
@@ -90,6 +95,19 @@ class _InvoicePaymentChoiceDialogShell extends StatefulWidget {
 class _InvoicePaymentChoiceDialogShellState
     extends State<_InvoicePaymentChoiceDialogShell> {
   final _panelKey = GlobalKey<InvoicePaymentChoicePanelState>();
+  bool _saving = false;
+
+  Future<void> _onSave() async {
+    if (_saving) return;
+    setState(() => _saving = true);
+    try {
+      await _panelKey.currentState?.submitSave(
+        persistDraftFn: widget.persistDraftFn,
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -155,7 +173,7 @@ class _InvoicePaymentChoiceDialogShellState
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   TextButton(
-                    style: TextButton.styleFrom(
+                    style: AppButtonBusy.elevatedLocked(
                       backgroundColor: AppColors.secondaryLight,
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(
@@ -166,12 +184,13 @@ class _InvoicePaymentChoiceDialogShellState
                         borderRadius: BorderRadius.circular(8),
                       ),
                     ),
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed:
+                        _saving ? null : () => Navigator.of(context).pop(),
                     child: Text(l10n.posCommonCancel),
                   ),
                   const SizedBox(width: 8),
                   FilledButton(
-                    style: FilledButton.styleFrom(
+                    style: AppButtonBusy.filledLocked(
                       backgroundColor: AppColors.primaryLight,
                       foregroundColor: AppColors.onPrimaryLight,
                       padding: const EdgeInsets.symmetric(
@@ -182,10 +201,10 @@ class _InvoicePaymentChoiceDialogShellState
                         borderRadius: BorderRadius.circular(8),
                       ),
                     ),
-                    onPressed: () => _panelKey.currentState?.submitSave(
-                      persistDraftFn: widget.persistDraftFn,
-                    ),
-                    child: Text(l10n.posCommonSave),
+                    onPressed: _saving ? null : _onSave,
+                    child: _saving
+                        ? AppButtonBusy.loaderOnFill(AppColors.primaryLight)
+                        : Text(l10n.posCommonSave),
                   ),
                 ],
               ),
@@ -207,6 +226,22 @@ class InvoicePaymentChoicePanel extends StatefulWidget {
   final bool customerTypeLocked;
   final bool paymentSelectionLocked;
   final bool embedded;
+  /// Fires when Individual / Corporate is chosen (or cleared).
+  final ValueChanged<bool?>? onCustomerTypeChanged;
+  /// Edit-customer advance receive: amount fields + Save records payments.
+  final PosOrder? softPosReceiveOrder;
+  /// Already-received SoftPOS/advance amount (banner + remaining hint).
+  final double softPosAlreadyReceived;
+  /// Label for prior receives (e.g. "Tap to Pay + Cash").
+  final String? softPosAlreadyReceivedLabel;
+  /// Structured prepaid rows for a clear received-amount breakdown.
+  final List<PosPaymentDraftRow>? softPosAlreadyReceivedRows;
+  /// When true, customer type radios are omitted (shown on the left by parent).
+  final bool hideCustomerType;
+  /// When true, only customer type is shown (no payment method grid).
+  final bool hidePaymentMethods;
+  /// Fired once after first frame so parent can place customer type on the left.
+  final VoidCallback? onReady;
 
   const InvoicePaymentChoicePanel({
     super.key,
@@ -218,6 +253,14 @@ class InvoicePaymentChoicePanel extends StatefulWidget {
     this.customerTypeLocked = false,
     this.paymentSelectionLocked = false,
     this.embedded = false,
+    this.onCustomerTypeChanged,
+    this.softPosReceiveOrder,
+    this.softPosAlreadyReceived = 0,
+    this.softPosAlreadyReceivedLabel,
+    this.softPosAlreadyReceivedRows,
+    this.hideCustomerType = false,
+    this.hidePaymentMethods = false,
+    this.onReady,
   });
 
   @override
@@ -233,13 +276,33 @@ class InvoicePaymentChoicePanelState extends State<InvoicePaymentChoicePanel> {
   bool _draftSaving = false;
   bool _draftClearing = false;
 
-  static const _corporateMethods = <PaymentMethod>[
+  static const _corporateMethodsBase = <PaymentMethod>[
     PaymentMethod.monthlyBilling,
     PaymentMethod.bankTransfer,
     PaymentMethod.cash,
     PaymentMethod.card,
     PaymentMethod.wallet,
   ];
+
+  /// Corporate methods filtered by server payment-method access.
+  List<PaymentMethod> get _corporateMethods {
+    final all = <PaymentMethod>[
+      ..._corporateMethodsBase,
+      if (isSoftPosUiEnabled) PaymentMethod.tapToPay,
+    ];
+    // Keep a stable order: put Tap to Pay before wallet when present.
+    final ordered = <PaymentMethod>[
+      PaymentMethod.monthlyBilling,
+      PaymentMethod.bankTransfer,
+      PaymentMethod.cash,
+      PaymentMethod.card,
+      if (all.contains(PaymentMethod.tapToPay)) PaymentMethod.tapToPay,
+      PaymentMethod.wallet,
+    ];
+    return ordered
+        .where((pm) => isPosPaymentMethodUiEnabled(pm))
+        .toList(growable: false);
+  }
 
   static const _retailDisplayOrder = <PaymentMethod>[
     PaymentMethod.cash,
@@ -251,6 +314,10 @@ class InvoicePaymentChoicePanelState extends State<InvoicePaymentChoicePanel> {
   ];
 
   bool get _isSplitMode => _selected.length > 1;
+  bool get _advanceReceiveMode => widget.softPosReceiveOrder != null;
+  /// Advance mode: amount fields for 1+ methods. Else: only when splitting.
+  bool get _showAmountFields =>
+      _advanceReceiveMode ? _selected.isNotEmpty : _isSplitMode;
   double get _safeTotal => widget.totalAmount > 0 ? widget.totalAmount : 0.0;
   String _languageCode = 'en';
 
@@ -267,6 +334,15 @@ class InvoicePaymentChoicePanelState extends State<InvoicePaymentChoicePanel> {
     }
     // Do not read Localizations/Theme here. initState cannot depend on inherited widgets.
     _syncAmountControllers(seedFromInitial: true);
+    // Pull latest branch payment-method gates (web Access toggles) so Card/etc.
+    // don't stay visible after admin turns them off.
+    SoftPosAccessService.instance.ensureListening();
+    unawaited(SoftPosAccessService.instance.refresh());
+    if (widget.onReady != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onReady!();
+      });
+    }
   }
 
   @override
@@ -315,53 +391,15 @@ class InvoicePaymentChoicePanelState extends State<InvoicePaymentChoicePanel> {
     if (!firstPick &&
         _shouldConfirmCustomerTypeSwitch() &&
         wantCorporate != _isCorporate) {
-      final go = await showDialog<bool>(
-        context: context,
-        builder: (ctx) {
-          final maxW = min(340.0, MediaQuery.sizeOf(ctx).width - 56);
-          return AlertDialog(
-            constraints: BoxConstraints(maxWidth: maxW),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            title: Text(
-              l10n.posPaymentChangeCustomerTitle,
-              style: TextStyle(
-                fontWeight: FontWeight.w800,
-                color: AppColors.secondaryLight,
-                fontSize: 17,
-              ),
-            ),
-            content: Text(
-              l10n.posPaymentChangeCustomerBody,
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(false),
-                child: Text(
-                  l10n.posCommonCancel,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.secondaryLight.withValues(alpha: 0.85),
-                  ),
-                ),
-              ),
-              FilledButton(
-                style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.primaryLight,
-                  foregroundColor: AppColors.onPrimaryLight,
-                ),
-                onPressed: () => Navigator.of(ctx).pop(true),
-                child: Text(
-                  l10n.posPaymentChangeCustomerButton,
-                  style: const TextStyle(fontWeight: FontWeight.w800),
-                ),
-              ),
-            ],
-          );
-        },
+      final go = await showPosLogoutStyleConfirmDialog(
+        context,
+        title: l10n.posPaymentChangeCustomerTitle,
+        body: l10n.posPaymentChangeCustomerBody,
+        confirmLabel: l10n.posPaymentChangeCustomerButton,
+        cancelLabel: l10n.posCommonCancel,
+        cancelUsesSecondaryFill: true,
       );
-      if (go != true) return;
+      if (!go) return;
     }
     if (!mounted) return;
 
@@ -371,6 +409,308 @@ class InvoicePaymentChoicePanelState extends State<InvoicePaymentChoicePanel> {
       _selected = {};
       _syncAmountControllers();
     });
+    widget.onCustomerTypeChanged?.call(wantCorporate);
+  }
+
+  /// Used when customer type lives under customer details (left column).
+  Future<void> applyCustomerTypeFromParent(bool wantCorporate) =>
+      _onCustomerTypeTapped(wantCorporate);
+
+  Widget buildCustomerTypeSection(AppLocalizations l10n) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _sectionLabel(l10n.posPaymentCustomerType),
+        _buildCustomerTypeRadios(l10n),
+      ],
+    );
+  }
+
+  Widget _buildCustomerTypeRadios(AppLocalizations l10n) {
+    Widget tile({
+      required bool corporate,
+      required String label,
+    }) {
+      return Expanded(
+        child: RadioListTile<bool>(
+          value: corporate,
+          groupValue: _isCorporate,
+          onChanged: widget.customerTypeLocked
+              ? null
+              : (_) => _onCustomerTypeTapped(corporate),
+          title: Text(
+            label,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: AppColors.secondaryLight,
+            ),
+          ),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+          visualDensity: VisualDensity.compact,
+          dense: true,
+        ),
+      );
+    }
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: RadioTheme(
+        data: RadioThemeData(
+          fillColor: WidgetStateProperty.resolveWith((states) {
+            if (states.contains(WidgetState.selected)) {
+              return AppColors.primaryLight;
+            }
+            if (states.contains(WidgetState.disabled)) {
+              return Colors.grey.shade400;
+            }
+            return Colors.grey.shade500;
+          }),
+        ),
+        // Individual + Corporate on one row.
+        child: Row(
+          children: [
+            tile(corporate: false, label: l10n.posPaymentIndividual),
+            Container(width: 1, height: 36, color: Colors.grey.shade200),
+            tile(corporate: true, label: l10n.posPaymentCorporate),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<({String method, double amount})> _receivedBreakdownLines() {
+    final raw = <({String method, double amount})>[];
+    final rows = widget.softPosAlreadyReceivedRows;
+    if (rows != null && rows.isNotEmpty) {
+      for (final r in rows) {
+        final method = r.method.trim();
+        if (method.isEmpty || r.amount <= 0.0001) continue;
+        raw.add((method: method, amount: r.amount));
+      }
+    } else {
+      // Fallback: parse "Cash 50.00 + Bank Transfer 40.00"
+      final label = (widget.softPosAlreadyReceivedLabel ?? '').trim();
+      if (label.isEmpty) return const [];
+      for (final part in label.split(RegExp(r'\s*\+\s*'))) {
+        final m = RegExp(
+          r'^(.+?)\s+([\d٠-٩]+(?:[.,][\d٠-٩]+)?)\s*$',
+        ).firstMatch(part.trim());
+        if (m == null) {
+          if (part.trim().isNotEmpty) {
+            raw.add((method: part.trim(), amount: 0));
+          }
+          continue;
+        }
+        final rawAmt = m.group(2)!.replaceAll(',', '.');
+        raw.add((
+          method: m.group(1)!.trim(),
+          amount: double.tryParse(rawAmt) ?? 0,
+        ));
+      }
+    }
+
+    // Merge same payment method into one line (e.g. Cash 50+89+20 → Cash 159).
+    final merged = <String, ({String method, double amount})>{};
+    for (final line in raw) {
+      final key = line.method.toLowerCase();
+      final existing = merged[key];
+      if (existing == null) {
+        merged[key] = line;
+      } else {
+        merged[key] = (
+          method: existing.method,
+          amount: existing.amount + line.amount,
+        );
+      }
+    }
+    return merged.values.toList();
+  }
+
+  Widget _receivedSummaryRow({
+    required String label,
+    required String value,
+    required Color valueColor,
+    FontWeight valueWeight = FontWeight.w700,
+    double valueSize = 12.5,
+  }) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+              color: Colors.grey.shade600,
+            ),
+          ),
+        ),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: valueSize,
+            fontWeight: valueWeight,
+            color: valueColor,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _receivedAmountBanner(AppLocalizations l10n) {
+    final amount = widget.softPosAlreadyReceived;
+    if (amount <= 0.0001) return const SizedBox.shrink();
+    final lang = Localizations.localeOf(context).languageCode;
+    String fmt(double v) => AppTranslationService.localizeDigitsForLanguage(
+          v.toStringAsFixed(2),
+          lang,
+        );
+    final amountText = fmt(amount);
+    final invoiceTotal = _safeTotal;
+    // Diff = received − invoice. Positive = overpay, negative = underpay.
+    final diff = amount - invoiceTotal;
+    final settled = diff.abs() <= 0.05;
+    final overpaid = diff > 0.05;
+    final balanceLabel = settled
+        ? 'Settled'
+        : overpaid
+            ? 'Customer overpay'
+            : 'Customer underpay';
+    final balanceValue = settled ? 0.0 : diff.abs();
+    final remainingColor = settled || overpaid
+        ? const Color(0xFF2E7D32)
+        : const Color(0xFFC62828);
+    final lines = _receivedBreakdownLines();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'Receiving Amount',
+            style: TextStyle(
+              fontWeight: FontWeight.w800,
+              fontSize: 13,
+              color: Color(0xFF1E2124),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.fromLTRB(12, 11, 12, 11),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (lines.isNotEmpty) ...[
+                  ...List.generate(lines.length, (i) {
+                    final line = lines[i];
+                    final lineAmt =
+                        line.amount > 0.0001 ? fmt(line.amount) : null;
+                    return Padding(
+                      padding: EdgeInsets.only(
+                        bottom: i == lines.length - 1 ? 0 : 6,
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: const BoxDecoration(
+                              color: Color(0xFF81C784),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              line.method,
+                              style: const TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF374151),
+                              ),
+                            ),
+                          ),
+                          if (lineAmt != null)
+                            Text(
+                              '$lineAmt ${l10n.posCommonSar}',
+                              style: const TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFF1F2937),
+                              ),
+                            ),
+                        ],
+                      ),
+                    );
+                  }),
+                  const SizedBox(height: 10),
+                  Container(height: 1, color: const Color(0xFFEEF2F0)),
+                  const SizedBox(height: 8),
+                ] else if ((widget.softPosAlreadyReceivedLabel ?? '')
+                    .trim()
+                    .isNotEmpty) ...[
+                  Text(
+                    l10n.posOrdersPaidVia(
+                      widget.softPosAlreadyReceivedLabel!.trim(),
+                    ),
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey.shade700,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Container(height: 1, color: const Color(0xFFEEF2F0)),
+                  const SizedBox(height: 8),
+                ],
+                _receivedSummaryRow(
+                  label: 'Receiving Amount',
+                  value: '$amountText ${l10n.posCommonSar}',
+                  valueColor: const Color(0xFF1B5E20),
+                  valueWeight: FontWeight.w700,
+                  valueSize: 12.5,
+                ),
+                const SizedBox(height: 6),
+                _receivedSummaryRow(
+                  label: l10n.posOrdersInvoiceTotal,
+                  value: '${fmt(invoiceTotal)} ${l10n.posCommonSar}',
+                  valueColor: const Color(0xFF1F2937),
+                  valueSize: 12.5,
+                ),
+                const SizedBox(height: 6),
+                _receivedSummaryRow(
+                  label: balanceLabel,
+                  value: '${fmt(balanceValue)} ${l10n.posCommonSar}',
+                  valueColor: remainingColor,
+                  valueWeight: FontWeight.w700,
+                  valueSize: 12.5,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  double? _suggestedAdvanceAmount() {
+    final total = widget.totalAmount;
+    final already = widget.softPosAlreadyReceived;
+    if (total <= 0.0001) return null;
+    final remaining = (total - already).clamp(0.0, double.infinity);
+    return remaining > 0.0001 ? remaining : null;
   }
 
   void _toggleRetailMethod(PaymentMethod pm, bool isSelected) {
@@ -384,8 +724,7 @@ class InvoicePaymentChoicePanelState extends State<InvoicePaymentChoicePanel> {
         _selected.add(pm);
       }
       final newLen = _isCorporate == false ? _selected.length : 0;
-      final oneToMany =
-          wasRetail && oldLen == 1 && newLen >= 2;
+      final oneToMany = wasRetail && oldLen == 1 && newLen >= 2;
       _syncAmountControllers(fromOneToManySplit: oneToMany);
     });
   }
@@ -405,6 +744,27 @@ class InvoicePaymentChoicePanelState extends State<InvoicePaymentChoicePanel> {
       final oneToMany = wasCorp && oldLen == 1 && newLen >= 2;
       _syncAmountControllers(fromOneToManySplit: oneToMany);
     });
+  }
+
+  /// Parent Save: amounts typed under each selected method.
+  Map<PaymentMethod, double> collectAdvanceAmounts() {
+    final out = <PaymentMethod, double>{};
+    for (final pm in _selected) {
+      final c = _amountControllers[pm];
+      if (c == null) continue;
+      final amt = _parseAmount(c);
+      if (amt > 0.0001) out[pm] = amt;
+    }
+    return out;
+  }
+
+  /// After SoftPOS/cash advance is recorded on the server, clear typed fields
+  /// so UI doesn't treat them as extra on top of updated prepaid.
+  void clearTypedAdvanceAmounts() {
+    for (final c in _amountControllers.values) {
+      c.clear();
+    }
+    if (mounted) setState(() {});
   }
 
   String _amountToText(double v, {String? languageCode}) {
@@ -448,10 +808,23 @@ class InvoicePaymentChoicePanelState extends State<InvoicePaymentChoicePanel> {
 
     if (!_isSplitMode && _isCorporate != null && _selected.length == 1) {
       final only = _selected.first;
-      _amountControllers[only]?.text = _amountToText(_safeTotal);
+      final ctrl = _amountControllers[only];
+      if (ctrl != null) {
+        if (_advanceReceiveMode) {
+          // Keep empty for free entry when total is 0; else seed remaining once.
+          if (ctrl.text.trim().isEmpty) {
+            final suggested = _suggestedAdvanceAmount();
+            if (suggested != null) {
+              ctrl.text = _amountToText(suggested);
+            }
+          }
+        } else {
+          ctrl.text = _amountToText(_safeTotal);
+        }
+      }
     }
 
-    if (_isSplitMode && fromOneToManySplit) {
+    if ((_isSplitMode || _advanceReceiveMode) && fromOneToManySplit) {
       for (final pm in _selected) {
         _amountControllers[pm]?.text = '';
       }
@@ -478,15 +851,48 @@ class InvoicePaymentChoicePanelState extends State<InvoicePaymentChoicePanel> {
     return sum;
   }
 
-  double get _remainingAmount => _safeTotal - _splitSum;
+  /// Already recorded SoftPOS / advance receives on this order.
+  double get _alreadyReceived =>
+      widget.softPosAlreadyReceived > 0 ? widget.softPosAlreadyReceived : 0.0;
+
+  /// Total money counted so far (saved receives + amounts typed now).
+  double get _receivingTotal => _alreadyReceived + _splitSum;
+
+  /// Advance Remaining = grand total − already paid + amounts typed now.
+  /// Receiving > total → negative (e.g. 133 − 199 = −66). Entering method
+  /// amounts moves Remaining toward 0 / positive (−66 + 60 = −6).
+  /// Underpaid (total > paid): amounts typed reduce Remaining (133 − 50 − 10).
+  double get _remainingAmount {
+    if (_advanceReceiveMode) {
+      final gap = _safeTotal - _alreadyReceived; // negative when overpaid
+      if (gap < 0) {
+        // Overpaid: show minus; field amounts move toward 0.
+        return gap + _splitSum;
+      }
+      // Still short: field amounts reduce Remaining.
+      return gap - _splitSum;
+    }
+    return _safeTotal - _splitSum;
+  }
+
+  /// True when amount fields are shown and any selected method has empty/zero amount.
+  bool get _hasEmptySelectedAmountFields {
+    if (!_advanceReceiveMode && !_isSplitMode) return false;
+    if (_selected.isEmpty) return false;
+    for (final pm in _selected) {
+      final c = _amountControllers[pm];
+      if (c == null || _parseAmount(c) <= 0) return true;
+    }
+    return false;
+  }
 
   bool get _canSave {
     if (_isCorporate == null || _selected.isEmpty) return false;
-    if (!_isSplitMode) return true;
-    for (final pm in _selected) {
-      final c = _amountControllers[pm];
-      if (c == null || _parseAmount(c) <= 0) return false;
+    if (_advanceReceiveMode) {
+      return !_hasEmptySelectedAmountFields;
     }
+    if (!_isSplitMode) return true;
+    if (_hasEmptySelectedAmountFields) return false;
     return _remainingAmount.abs() <= 0.05;
   }
 
@@ -674,50 +1080,74 @@ class InvoicePaymentChoicePanelState extends State<InvoicePaymentChoicePanel> {
         ),
         const SizedBox(height: 8),
         ...rows,
-        const SizedBox(height: 8),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          decoration: BoxDecoration(
-            color: _remainingAmount.abs() <= 0.05
-                ? const Color(0xFFEAF8EE)
-                : const Color(0xFFFFF4E5),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(
-              color: _remainingAmount.abs() <= 0.05
-                  ? const Color(0xFFA7D7B2)
-                  : const Color(0xFFF4C27A),
-            ),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                _remainingAmount.abs() <= 0.05 ? Icons.check_circle : Icons.info_outline,
-                size: 16,
-                color: _remainingAmount.abs() <= 0.05
-                    ? const Color(0xFF2E7D32)
-                    : const Color(0xFFB26A00),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  l10n.posPaymentRemaining(
-                    AppTranslationService.localizeDigitsForLanguage(
-                      _remainingAmount.toStringAsFixed(2),
-                      Localizations.localeOf(context).languageCode,
-                    ),
-                  ),
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    fontWeight: FontWeight.w700,
-                    color: _remainingAmount.abs() <= 0.05
-                        ? const Color(0xFF2E7D32)
-                        : const Color(0xFF8B5E00),
+        if (!_advanceReceiveMode ||
+            _safeTotal > 0.0001 ||
+            _alreadyReceived > 0.0001) ...[
+          const SizedBox(height: 8),
+          Builder(
+            builder: (context) {
+              // Advance: live received (+ typed) vs invoice.
+              // Positive = overpay (shown +); negative = underpay (shown +).
+              final gap = _advanceReceiveMode
+                  ? (_receivingTotal - _safeTotal)
+                  : _remainingAmount;
+              final balanced = gap.abs() <= 0.05;
+              final overpaid = gap > 0.05;
+              final underpaid = gap < -0.05;
+              final statusLabel = balanced
+                  ? 'Settled'
+                  : overpaid
+                      ? 'Customer overpay'
+                      : underpaid
+                          ? 'Customer underpay'
+                          : 'Balance due';
+              final labelAmount = gap.abs().toStringAsFixed(2);
+              final toneGreen = balanced || overpaid;
+              return Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: toneGreen
+                      ? const Color(0xFFEAF8EE)
+                      : const Color(0xFFFFF4E5),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: toneGreen
+                        ? const Color(0xFFA7D7B2)
+                        : const Color(0xFFF4C27A),
                   ),
                 ),
-              ),
-            ],
+                child: Row(
+                  children: [
+                    Icon(
+                      balanced ? Icons.check_circle : Icons.info_outline,
+                      size: 16,
+                      color: toneGreen
+                          ? const Color(0xFF2E7D32)
+                          : const Color(0xFFB26A00),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '$statusLabel: ${AppTranslationService.localizeDigitsForLanguage(
+                          labelAmount,
+                          Localizations.localeOf(context).languageCode,
+                        )} ${l10n.posCommonSar}',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w700,
+                          color: toneGreen
+                              ? const Color(0xFF2E7D32)
+                              : const Color(0xFF8B5E00),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
           ),
-        ),
+        ],
       ],
     );
   }
@@ -785,6 +1215,14 @@ class InvoicePaymentChoicePanelState extends State<InvoicePaymentChoicePanel> {
 
   Map<PaymentMethod, double> _buildPaymentAmounts() {
     if (_selected.isEmpty) return const {};
+    if (_advanceReceiveMode || _isSplitMode) {
+      final out = <PaymentMethod, double>{};
+      for (final pm in _selected) {
+        final c = _amountControllers[pm];
+        if (c != null) out[pm] = _parseAmount(c);
+      }
+      return out;
+    }
     if (_selected.length == 1) {
       return {_selected.first: _safeTotal};
     }
@@ -811,7 +1249,32 @@ class InvoicePaymentChoicePanelState extends State<InvoicePaymentChoicePanel> {
   Future<void> submitSave({
     InvoicePaymentDraftPersistFn? persistDraftFn,
   }) async {
-    if (!_canSave || _draftSaving || _draftClearing) return;
+    if (_draftSaving || _draftClearing) return;
+    final l10n = AppLocalizations.of(context)!;
+    if (_isCorporate == null) {
+      ToastService.showError(context, l10n.posPaymentTapCustomerFirst);
+      return;
+    }
+    if (_selected.isEmpty) {
+      ToastService.showError(context, l10n.posPaymentsChooseMethod);
+      return;
+    }
+    if (_hasEmptySelectedAmountFields) {
+      ToastService.showError(context, l10n.posPaymentsEnterSelectedAmounts);
+      return;
+    }
+    if (!_canSave) {
+      if (_isSplitMode && !_advanceReceiveMode) {
+        ToastService.showError(
+          context,
+          l10n.posPaymentsSplitMismatch(
+            _safeTotal.toStringAsFixed(2),
+            _splitSum.toStringAsFixed(2),
+          ),
+        );
+      }
+      return;
+    }
     final proposal = collectResult();
     if (proposal == null) return;
     if (persistDraftFn != null) {
@@ -860,16 +1323,20 @@ class InvoicePaymentChoicePanelState extends State<InvoicePaymentChoicePanel> {
   Widget _buildPaymentFormColumn(AppLocalizations l10n) {
     final retailMethods = _retailDisplayOrder
         .where((pm) =>
-            pm.isRetailSelectable &&
-            (pm != PaymentMethod.tapToPay || isSoftPosUiEnabled))
+            pm.isRetailSelectable && isPosPaymentMethodUiEnabled(pm))
         .toList();
-    if (!isSoftPosUiEnabled && _selected.contains(PaymentMethod.tapToPay)) {
+    final blocked = _selected
+        .where((pm) => !isPosPaymentMethodUiEnabled(pm))
+        .toList();
+    if (blocked.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         setState(() {
-          _selected.remove(PaymentMethod.tapToPay);
-          _amountControllers[PaymentMethod.tapToPay]?.dispose();
-          _amountControllers.remove(PaymentMethod.tapToPay);
+          for (final pm in blocked) {
+            _selected.remove(pm);
+            _amountControllers[pm]?.dispose();
+            _amountControllers.remove(pm);
+          }
         });
       });
     }
@@ -877,80 +1344,24 @@ class InvoicePaymentChoicePanelState extends State<InvoicePaymentChoicePanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _sectionLabel(l10n.posPaymentCustomerType),
-        DecoratedBox(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFFE2E8F0)),
-          ),
-          child: RadioTheme(
-            data: RadioThemeData(
-              fillColor: WidgetStateProperty.resolveWith((states) {
-                if (states.contains(WidgetState.selected)) {
-                  return AppColors.primaryLight;
-                }
-                if (states.contains(WidgetState.disabled)) {
-                  return Colors.grey.shade400;
-                }
-                return Colors.grey.shade500;
-              }),
+        if (!widget.hideCustomerType) ...[
+          _sectionLabel(l10n.posPaymentCustomerType),
+          _buildCustomerTypeRadios(l10n),
+          if (_isCorporate == null && !widget.hidePaymentMethods) ...[
+            const SizedBox(height: 12),
+            Text(
+              l10n.posPaymentTapCustomerFirst,
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey.shade600,
+                height: 1.35,
+              ),
             ),
-            child: Column(
-              children: [
-                RadioListTile<bool>(
-                  value: false,
-                  groupValue: _isCorporate,
-                  onChanged: widget.customerTypeLocked
-                      ? null
-                      : (_) => _onCustomerTypeTapped(false),
-                  title: Text(
-                    l10n.posPaymentIndividual,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.secondaryLight,
-                    ),
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                  visualDensity: VisualDensity.compact,
-                ),
-                Divider(height: 1, color: Colors.grey.shade200),
-                RadioListTile<bool>(
-                  value: true,
-                  groupValue: _isCorporate,
-                  onChanged: widget.customerTypeLocked
-                      ? null
-                      : (_) => _onCustomerTypeTapped(true),
-                  title: Text(
-                    l10n.posPaymentCorporate,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.secondaryLight,
-                    ),
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                  visualDensity: VisualDensity.compact,
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (_isCorporate == null) ...[
-          const SizedBox(height: 12),
-          Text(
-            l10n.posPaymentTapCustomerFirst,
-            style: TextStyle(
-              fontSize: 11.5,
-              fontWeight: FontWeight.w600,
-              color: Colors.grey.shade600,
-              height: 1.35,
-            ),
-          ),
+          ],
         ],
-        if (_isCorporate != null) ...[
-          const SizedBox(height: 14),
+        if (_isCorporate != null && !widget.hidePaymentMethods) ...[
+          if (!widget.hideCustomerType) const SizedBox(height: 14),
           if (widget.paymentSelectionLocked) ...[
             Container(
               width: double.infinity,
@@ -1018,13 +1429,14 @@ class InvoicePaymentChoicePanelState extends State<InvoicePaymentChoicePanel> {
                   methods: _isCorporate! ? _corporateMethods : retailMethods,
                   isCorporateMode: _isCorporate!,
                 ),
-                if (_isSplitMode) ...[
+                if (_showAmountFields) ...[
                   const SizedBox(height: 12),
                   _splitAmountsEditor(),
                 ],
               ],
             ),
           ),
+          _receivedAmountBanner(l10n),
         ],
         const SizedBox(height: 10),
       ],

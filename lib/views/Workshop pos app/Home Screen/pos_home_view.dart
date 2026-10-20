@@ -16,12 +16,14 @@ import '../../../utils/app_formatters.dart';
 import '../../../utils/pos_tablet_layout.dart';
 import '../../../utils/pos_shell_scaffold.dart' show PosShellScaffoldRegistry;
 import '../../../utils/toast_service.dart';
-import '../../../data/network/api_constants.dart';
 import '../../../data/repositories/pos_repository.dart';
 import '../../../services/session_service.dart';
 import '../../../models/customer_search_model.dart';
 import '../../../models/create_invoice_model.dart';
 import '../../../models/invoiced_orders_model.dart';
+import 'package:http/http.dart' as http;
+
+import '../../../data/network/api_constants.dart';
 import '../../../services/invoice_auto_dispatch.dart';
 import '../../../services/whatsapp_invoice_share.dart';
 import '../../../services/invoice_dialog_launcher.dart';
@@ -1092,8 +1094,8 @@ class _PosHomeViewState extends State<PosHomeView>
                 const SizedBox(height: 8),
                 Text(
                   isAr
-                      ? 'أي تطبيق واتساب تريد فتحه؟ سيتم إنشاء رابط الفاتورة وفتح محادثة العميل.'
-                      : 'Which WhatsApp app should open? We will generate the invoice link and open the customer chat.',
+                      ? 'أي تطبيق واتساب تريد استخدامه؟ سيتم إرسال ملف PDF للفاتورة إلى رقم العميل.'
+                      : 'Which WhatsApp app should send it? The invoice PDF will go to the customer’s number.',
                   textAlign: TextAlign.center,
                   style: const TextStyle(
                     color: Colors.grey,
@@ -1182,6 +1184,23 @@ class _PosHomeViewState extends State<PosHomeView>
     );
   }
 
+  /// Public `/pdf` the old customer-history WhatsApp message linked to.
+  String? _legacyPublicInvoicePdfUrl(Invoice invoice) {
+    final publicUrl = invoice.publicInvoiceUrl?.trim();
+    if (publicUrl != null &&
+        publicUrl.isNotEmpty &&
+        (publicUrl.startsWith('http://') || publicUrl.startsWith('https://'))) {
+      return publicUrl.endsWith('/pdf')
+          ? publicUrl
+          : '${publicUrl.replaceAll(RegExp(r'/+$'), '')}/pdf';
+    }
+    final publicPath = invoice.publicInvoicePath?.trim();
+    if (publicPath == null || publicPath.isEmpty) return null;
+    final base = ApiConstants.baseUrl.replaceAll(RegExp(r'/+$'), '');
+    final path = publicPath.startsWith('/') ? publicPath : '/$publicPath';
+    return path.endsWith('/pdf') ? '$base$path' : '$base$path/pdf';
+  }
+
   Future<void> _sendHomeInvoiceWhatsApp(
     BuildContext context, {
     required SearchedCustomer customer,
@@ -1237,8 +1256,8 @@ class _PosHomeViewState extends State<PosHomeView>
                     const SizedBox(height: 14),
                     Text(
                       isAr
-                          ? 'جاري تجهيز رابط الفاتورة…'
-                          : 'Preparing invoice link…',
+                          ? 'جاري تجهيز ملف الفاتورة…'
+                          : 'Preparing invoice PDF…',
                       textAlign: TextAlign.center,
                       style: const TextStyle(
                         fontWeight: FontWeight.w700,
@@ -1278,30 +1297,15 @@ class _PosHomeViewState extends State<PosHomeView>
           response?.message.isNotEmpty == true
               ? response!.message
               : (isAr
-                  ? 'تعذر إنشاء رابط الفاتورة'
-                  : 'Could not create invoice link'),
+                  ? 'تعذر تجهيز الفاتورة'
+                  : 'Could not prepare the invoice'),
         );
         return;
       }
 
-      final inv = response.invoice!;
-      final publicUrl = inv.publicInvoiceUrl?.trim();
-      final publicPath = inv.publicInvoicePath?.trim();
-      String? invoiceLink;
-      if (publicUrl != null &&
-          publicUrl.isNotEmpty &&
-          (publicUrl.startsWith('http://') ||
-              publicUrl.startsWith('https://'))) {
-        invoiceLink = publicUrl.endsWith('/pdf')
-            ? publicUrl
-            : '${publicUrl.replaceAll(RegExp(r'/+$'), '')}/pdf';
-      } else if (publicPath != null && publicPath.isNotEmpty) {
-        final base = ApiConstants.baseUrl.replaceAll(RegExp(r'/+$'), '');
-        final path = publicPath.startsWith('/') ? publicPath : '/$publicPath';
-        invoiceLink = '$base$path/pdf';
-      }
-
-      if (invoiceLink == null || invoiceLink.isEmpty) {
+      // Same public PDF the old WhatsApp link opened — not the newer local A4 layout.
+      final pdfUrl = _legacyPublicInvoicePdfUrl(response.invoice!);
+      if (pdfUrl == null) {
         closeLoader();
         ToastService.showError(
           context,
@@ -1311,27 +1315,40 @@ class _PosHomeViewState extends State<PosHomeView>
         );
         return;
       }
+      final res = await http
+          .get(Uri.parse(pdfUrl))
+          .timeout(const Duration(seconds: 45));
+      final bytes = res.bodyBytes;
+      final isPdf = res.statusCode == 200 &&
+          bytes.length > 4 &&
+          bytes[0] == 0x25 &&
+          bytes[1] == 0x50 &&
+          bytes[2] == 0x44 &&
+          bytes[3] == 0x46;
+      if (!context.mounted) {
+        closeLoader();
+        return;
+      }
+      if (!isPdf) {
+        closeLoader();
+        ToastService.showError(
+          context,
+          isAr ? 'تعذر تنزيل ملف الفاتورة' : 'Could not download the invoice PDF',
+        );
+        return;
+      }
 
       final invoiceNo = order.invoiceNo.trim().isNotEmpty
           ? order.invoiceNo.trim()
           : order.id;
-      final plate = (order.plateNumber ?? '').trim();
-      final name =
-          customer.name.trim().isNotEmpty ? customer.name.trim() : 'there';
-      final message = [
-        'Hi $name,',
-        '',
-        'Your invoice $invoiceNo${plate.isNotEmpty ? ' ($plate)' : ''} is ready.',
-        'Invoice: $invoiceLink',
-        '',
-        'Thank you!',
-      ].join('\n');
 
       closeLoader();
-      final opened = await WhatsappInvoiceShare.openCustomerChatWithMessage(
+      final opened = await WhatsappInvoiceShare.shareDownloadedPdf(
+        bytes: bytes,
+        filename: 'invoice-$invoiceNo.pdf',
         phoneRaw: phone,
-        message: message,
         app: app,
+        caption: isAr ? 'إليك فاتورتك' : 'Here is your invoice',
       );
       if (!context.mounted) return;
       if (!opened) {

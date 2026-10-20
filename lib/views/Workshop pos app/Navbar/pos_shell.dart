@@ -340,8 +340,7 @@ class _PosShellState extends State<PosShell> with WidgetsBindingObserver {
     final stackBody = ListenableBuilder(
       listenable: SoftPosAccessService.instance,
       builder: (context, _) {
-        if (!isSoftPosUiEnabled &&
-            validIndex == kPosShellNfcAdjustmentsTabIndex) {
+        if (validIndex == kPosShellNfcAdjustmentsTabIndex) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
             context.read<PosViewModel>().setShellSelectedIndex(0);

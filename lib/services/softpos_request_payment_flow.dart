@@ -81,10 +81,30 @@ Future<SoftPosRequestPaymentResult> runSoftPosRequestPayment({
             (customerMobileOverride ?? customer?.mobile ?? '').trim().isNotEmpty
                 ? (customerMobileOverride ?? customer?.mobile)?.trim()
                 : null,
-        plateNo: (plateNoOverride ?? vehicle?.plateNo ?? '').trim().isNotEmpty
-            ? (plateNoOverride ?? vehicle?.plateNo)?.trim()
+        plateNo: (plateNoOverride ?? vehicle?.displayPlate ?? vehicle?.plateNo ?? '')
+                .trim()
+                .isNotEmpty
+            ? (plateNoOverride ?? vehicle?.displayPlate ?? vehicle?.plateNo)?.trim()
+            : null,
+        vehicleMake: (vehicle?.make ?? '').trim().isNotEmpty
+            ? vehicle!.make.trim()
+            : null,
+        vehicleModel: (vehicle?.model ?? '').trim().isNotEmpty
+            ? vehicle!.model.trim()
+            : null,
+        vehicleVin: (vehicle?.vin ?? '').trim().isNotEmpty
+            ? vehicle!.vin!.trim()
+            : null,
+        mileage: order.odometerReading > 0 ? order.odometerReading : null,
+        customerType: softPosCustomerTypeFromOrder(order),
+        customerTaxId: (customer?.vatNumber ?? '').trim().isNotEmpty
+            ? customer!.vatNumber.trim()
             : null,
         lineSummary: softPosLineSummaryFromOrder(order),
+        lineItems: softPosLineItemsFromOrder(order),
+        totalBeforeDiscount: softPosTotalBeforeDiscountFromOrder(order),
+        totalDiscount: softPosTotalDiscountFromOrder(order),
+        vatAmount: softPosVatFromOrder(order, amount: softPosAmount),
         paymentLabel: 'Tap to Pay',
       ),
     ),

@@ -52,6 +52,28 @@ class _SoftPosSettingsDialogState extends State<_SoftPosSettingsDialog> {
   String? _connectingDeviceId;
   List<SoftPosTerminalItem> _items = const [];
 
+  List<SoftPosTerminalItem> _sortedTerminals(
+    List<SoftPosTerminalItem> items, {
+    String? boundDeviceId,
+  }) {
+    if (items.isEmpty) return List.of(items);
+    final boundId = (boundDeviceId ?? _boundDeviceId ?? '').trim();
+    int rank(SoftPosTerminalItem t) {
+      final mine = (boundId.isNotEmpty && t.deviceId == boundId) || t.bound;
+      if (mine) return 0;
+      if (t.boundToOther) return 2;
+      return 1;
+    }
+
+    final sorted = List<SoftPosTerminalItem>.of(items);
+    sorted.sort((a, b) {
+      final byRank = rank(a).compareTo(rank(b));
+      if (byRank != 0) return byRank;
+      return a.label.toLowerCase().compareTo(b.label.toLowerCase());
+    });
+    return sorted;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -69,59 +91,47 @@ class _SoftPosSettingsDialogState extends State<_SoftPosSettingsDialog> {
       if (!mounted) return;
 
       SoftPosTerminalItem? bound;
+      final listedBoundId = (listed.boundDeviceId ?? '').trim();
       for (final item in listed.items) {
-        if (item.bound || item.deviceId == listed.boundDeviceId) {
+        if (item.bound ||
+            (listedBoundId.isNotEmpty && item.deviceId == listedBoundId)) {
           bound = item;
           break;
         }
       }
 
-      var enabled = cfg.enabled && cfg.deviceId != null;
+      var enabled = false;
       var reachable = false;
       if (bound != null) {
         // Socket bridge: presence `online` is enough (no same Wi‑Fi required).
         reachable = bound.online;
         final host = (bound.lanHost ?? cfg.host).trim();
         final port = bound.lanPort ?? cfg.port;
-        if (bound.deviceId != cfg.deviceId ||
-            !cfg.enabled ||
-            (bound.hasLan &&
-                (host != cfg.host || port != cfg.port))) {
-          await SoftPosSettings.save(
-            enabled: true,
-            host: SoftPosSettings.isPlausibleHost(host)
-                ? host
-                : SoftPosSettings.defaultHost,
-            port: port,
-            deviceId: bound.deviceId,
-            terminalId: bound.terminalId,
-            deviceLabel: bound.label,
-          );
-        }
+        await SoftPosSettings.save(
+          enabled: true,
+          host: SoftPosSettings.isPlausibleHost(host)
+              ? host
+              : SoftPosSettings.defaultHost,
+          port: port,
+          deviceId: bound.deviceId,
+          terminalId: (bound.nearpayTerminalId ??
+                  bound.terminalTid ??
+                  bound.terminalId)
+              ?.trim(),
+          deviceLabel: bound.label,
+        );
         enabled = true;
-        // Optional LAN ping only if presence says offline but LAN might still work.
-        if (!reachable && bound.hasLan) {
-          reachable = await SoftPosBridge.ping(
-            host: bound.lanHost!.trim(),
-            port: bound.lanPort ?? SoftPosSettings.defaultPort,
-            attempts: 1,
-          );
-        }
-      } else if (cfg.deviceId != null) {
-        reachable = await SoftPosBridge.isBoundDeviceOnline();
-        if (!reachable && SoftPosSettings.isPlausibleHost(cfg.host)) {
-          reachable = await SoftPosBridge.ping(
-            host: cfg.host,
-            port: cfg.port,
-            attempts: 1,
-          );
-        }
+      } else {
+        // No binding for this cashier+branch — never show another branch's phone.
+        await SoftPosSettings.clearBinding();
       }
 
       if (!mounted) return;
+      final boundId = bound?.deviceId ??
+          (listedBoundId.isEmpty ? null : listedBoundId);
       setState(() {
-        _items = listed.items;
-        _boundDeviceId = listed.boundDeviceId ?? bound?.deviceId;
+        _boundDeviceId = boundId;
+        _items = _sortedTerminals(listed.items, boundDeviceId: boundId);
         _enabled = enabled;
         _reachable = enabled ? reachable : false;
         _loading = false;
@@ -136,6 +146,15 @@ class _SoftPosSettingsDialogState extends State<_SoftPosSettingsDialog> {
   }
 
   Future<void> _connect(SoftPosTerminalItem item) async {
+    if (item.boundToOther) {
+      final who = (item.boundByName ?? '').trim();
+      setState(() {
+        _error = who.isNotEmpty
+            ? 'This SoftPOS is connected by $who. Ask them to disconnect first.'
+            : 'This SoftPOS is already connected by another cashier.';
+      });
+      return;
+    }
     setState(() {
       _binding = true;
       _connectingDeviceId = item.deviceId;
@@ -155,10 +174,8 @@ class _SoftPosSettingsDialogState extends State<_SoftPosSettingsDialog> {
 
       final host = (fresh.lanHost ?? '').trim();
       final port = fresh.lanPort ?? SoftPosSettings.defaultPort;
-      // Socket bridge works without LAN IP — bind enables SoftPOS immediately.
-      final ok = fresh.online ||
-          (SoftPosSettings.isPlausibleHost(host) &&
-              await SoftPosBridge.ping(host: host, port: port, attempts: 1));
+      // Backend socket only — bind enables SoftPOS immediately.
+      final ok = fresh.online;
       await SoftPosSettings.save(
         enabled: true,
         host: SoftPosSettings.isPlausibleHost(host)
@@ -168,7 +185,10 @@ class _SoftPosSettingsDialogState extends State<_SoftPosSettingsDialog> {
             ? port
             : SoftPosSettings.defaultPort,
         deviceId: fresh.deviceId,
-        terminalId: fresh.terminalId,
+        terminalId: (fresh.nearpayTerminalId ??
+                fresh.terminalTid ??
+                fresh.terminalId)
+            ?.trim(),
         deviceLabel: fresh.label,
       );
       if (!mounted) return;
@@ -176,17 +196,15 @@ class _SoftPosSettingsDialogState extends State<_SoftPosSettingsDialog> {
         _binding = false;
         _connectingDeviceId = null;
         _boundDeviceId = fresh.deviceId;
-        _items = listed.items;
+        _items = _sortedTerminals(
+          listed.items,
+          boundDeviceId: fresh.deviceId,
+        );
         _enabled = true;
         _reachable = ok;
-        if (!ok) {
-          _error =
-              'Terminal bound. Open SoftPOS on that phone so it connects to the backend, then tap Refresh.';
-        }
+        _error = null;
       });
-      if (ok) {
-        Navigator.of(context).pop(true);
-      }
+      Navigator.of(context).pop(true);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -337,6 +355,7 @@ class _SoftPosSettingsDialogState extends State<_SoftPosSettingsDialog> {
                       itemBuilder: (context, index) {
                         final item = _items[index];
                         final isBound = item.deviceId == _boundDeviceId;
+                        final takenByOther = item.boundToOther && !isBound;
                         final connecting =
                             _connectingDeviceId == item.deviceId;
                         final tid = (item.nearpayTerminalId ??
@@ -346,12 +365,27 @@ class _SoftPosSettingsDialogState extends State<_SoftPosSettingsDialog> {
                         final maskedTid = tid.length <= 3
                             ? tid
                             : '***${tid.substring(tid.length - 3)}';
+                        final otherName = (item.boundByName ?? '').trim();
+                        final statusText = isBound
+                            ? 'Connected'
+                            : takenByOther
+                                ? (otherName.isNotEmpty
+                                    ? 'Connected by $otherName'
+                                    : 'Connected by another cashier')
+                                : 'Not connected';
+                        final actionLabel = isBound
+                            ? 'Logout'
+                            : takenByOther
+                                ? (otherName.isNotEmpty
+                                    ? otherName
+                                    : 'In use')
+                                : 'Connect';
                         return Material(
                           color: const Color(0xFFF7F8FA),
                           borderRadius: BorderRadius.circular(14),
                           child: InkWell(
                             borderRadius: BorderRadius.circular(14),
-                            onTap: _binding
+                            onTap: _binding || takenByOther
                                 ? null
                                 : () {
                                     if (isBound) {
@@ -390,7 +424,9 @@ class _SoftPosSettingsDialogState extends State<_SoftPosSettingsDialog> {
                                           CrossAxisAlignment.start,
                                       children: [
                                         Text(
-                                          item.label,
+                                          maskedTid.isNotEmpty
+                                              ? '${item.label} ($maskedTid)'
+                                              : item.label,
                                           style: AppTextStyles.bodySmall
                                               .copyWith(
                                             fontWeight: FontWeight.w800,
@@ -398,16 +434,6 @@ class _SoftPosSettingsDialogState extends State<_SoftPosSettingsDialog> {
                                             color: AppColors.secondaryLight,
                                           ),
                                         ),
-                                        const SizedBox(height: 3),
-                                        if (maskedTid.isNotEmpty)
-                                          Text(
-                                            'TID $maskedTid',
-                                            style: AppTextStyles.bodySmall
-                                                .copyWith(
-                                              fontSize: 11.5,
-                                              color: Colors.grey.shade600,
-                                            ),
-                                          ),
                                         const SizedBox(height: 5),
                                         Row(
                                           children: [
@@ -417,20 +443,24 @@ class _SoftPosSettingsDialogState extends State<_SoftPosSettingsDialog> {
                                               decoration: BoxDecoration(
                                                 color: isBound
                                                     ? const Color(0xFF2E7D32)
-                                                    : const Color(0xFFC62828),
+                                                    : takenByOther
+                                                        ? const Color(0xFFF9A825)
+                                                        : const Color(0xFFC62828),
                                                 shape: BoxShape.circle,
                                               ),
                                             ),
                                             const SizedBox(width: 7),
-                                            Text(
-                                              isBound
-                                                  ? 'Connected'
-                                                  : 'Not connected',
-                                              style: AppTextStyles.bodySmall
-                                                  .copyWith(
-                                                fontSize: 11.5,
-                                                fontWeight: FontWeight.w600,
-                                                color: Colors.grey.shade600,
+                                            Flexible(
+                                              child: Text(
+                                                statusText,
+                                                style: AppTextStyles.bodySmall
+                                                    .copyWith(
+                                                  fontSize: 11.5,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: Colors.grey.shade600,
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
                                               ),
                                             ),
                                           ],
@@ -442,6 +472,7 @@ class _SoftPosSettingsDialogState extends State<_SoftPosSettingsDialog> {
                                     constraints: const BoxConstraints(
                                       minWidth: 78,
                                       minHeight: 28,
+                                      maxWidth: 120,
                                     ),
                                     padding: const EdgeInsets.symmetric(
                                       horizontal: 10,
@@ -451,12 +482,16 @@ class _SoftPosSettingsDialogState extends State<_SoftPosSettingsDialog> {
                                     decoration: BoxDecoration(
                                       color: isBound
                                           ? const Color(0xFFC62828)
-                                          : const Color(0xFF2E7D32),
+                                          : takenByOther
+                                              ? const Color(0xFF90A4AE)
+                                              : const Color(0xFF757575),
                                       borderRadius: BorderRadius.circular(8),
                                       border: Border.all(
                                         color: isBound
                                             ? const Color(0xFFC62828)
-                                            : const Color(0xFF2E7D32),
+                                            : takenByOther
+                                                ? const Color(0xFF90A4AE)
+                                                : const Color(0xFF757575),
                                       ),
                                     ),
                                     child: connecting
@@ -469,7 +504,10 @@ class _SoftPosSettingsDialogState extends State<_SoftPosSettingsDialog> {
                                             ),
                                           )
                                         : Text(
-                                            isBound ? 'Disconnect' : 'Connect',
+                                            actionLabel,
+                                            textAlign: TextAlign.center,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
                                             style: AppTextStyles.bodySmall
                                                 .copyWith(
                                               fontWeight: FontWeight.w800,
@@ -568,26 +606,31 @@ bool _orderHasProductsOrServices(PosOrder order) {
 /// When [skipReadyGate] is true (Orders Hub already knows Online), open
 /// immediately — do not await a LAN ping before showing UI.
 /// Otherwise: settings first if SoftPOS is not reachable, then payment.
-Future<void> showSoftPosSendRequestDialog(
+/// Returns `true` when SoftPOS approved and amount was recorded on the order.
+Future<bool> showSoftPosSendRequestDialog(
   BuildContext context, {
   required PosOrder order,
   double? suggestedAmount,
   bool skipReadyGate = false,
+  /// When true, amount field is read-only (Save flow from Edit customer).
+  bool lockAmount = false,
 }) async {
-  if (!context.mounted) return;
+  if (!context.mounted) return false;
 
+  // Only open SoftPOS terminals list when no terminal is Connected.
+  // Bound (Connected) → send request even if handset Online/Offline.
   if (!skipReadyGate) {
     var ready = await SoftPosConnectionGuard.isSoftPosReadyForPayment();
     if (!ready) {
       await showSoftPosSettingsDialog(context);
-      if (!context.mounted) return;
+      if (!context.mounted) return false;
       ready = await SoftPosConnectionGuard.isSoftPosReadyForPayment();
       if (!ready) {
         ToastService.showError(
           context,
           AppLocalizations.of(context)!.posSoftPosConnectionNotStable,
         );
-        return;
+        return false;
       }
     }
   }
@@ -596,6 +639,8 @@ Future<void> showSoftPosSendRequestDialog(
       (_orderHasProductsOrServices(order)
           ? order.draftPosOrderPayableDisplay
           : 0.0);
+  // Amount dialog pops before SoftPOS waiting finishes — wait on Completer.
+  final completer = Completer<bool>();
   await showDialog<void>(
     context: context,
     barrierDismissible: false,
@@ -604,18 +649,27 @@ Future<void> showSoftPosSendRequestDialog(
     builder: (_) => _SoftPosSendRequestDialog(
       order: order,
       initialAmount: amount > 0.0001 ? amount : null,
+      lockAmount: lockAmount && amount > 0.0001,
+      onCompleted: (ok) {
+        if (!completer.isCompleted) completer.complete(ok);
+      },
     ),
   );
+  return completer.future;
 }
 
 class _SoftPosSendRequestDialog extends StatefulWidget {
   const _SoftPosSendRequestDialog({
     required this.order,
     this.initialAmount,
+    this.lockAmount = false,
+    this.onCompleted,
   });
 
   final PosOrder order;
   final double? initialAmount;
+  final bool lockAmount;
+  final ValueChanged<bool>? onCompleted;
 
   @override
   State<_SoftPosSendRequestDialog> createState() =>
@@ -626,6 +680,7 @@ class _SoftPosSendRequestDialogState extends State<_SoftPosSendRequestDialog> {
   late final TextEditingController _amountCtrl;
   bool _sending = false;
   String? _deviceLabel;
+  String? _terminalTid;
   bool _softPosEnabled = false;
 
   @override
@@ -646,6 +701,13 @@ class _SoftPosSendRequestDialogState extends State<_SoftPosSendRequestDialog> {
     super.dispose();
   }
 
+  String _maskTerminalId(String raw) {
+    final tid = raw.trim();
+    if (tid.isEmpty) return '';
+    if (tid.length <= 3) return tid;
+    return '***${tid.substring(tid.length - 3)}';
+  }
+
   Future<void> _loadSoftPosEndpoint() async {
     final cfg = await SoftPosSettings.load();
     if (!mounted) return;
@@ -654,18 +716,25 @@ class _SoftPosSendRequestDialogState extends State<_SoftPosSendRequestDialog> {
       _deviceLabel = (cfg.deviceLabel ?? '').trim().isNotEmpty
           ? cfg.deviceLabel!.trim()
           : null;
+      _terminalTid = (cfg.terminalId ?? '').trim().isNotEmpty
+          ? cfg.terminalId!.trim()
+          : null;
     });
   }
 
   String get _endpointLabel {
     final name = (_deviceLabel ?? '').trim();
+    final masked = _maskTerminalId(_terminalTid ?? '');
     if (name.isEmpty) {
-      return _softPosEnabled
-          ? 'SoftPOS terminal'
-          : 'SoftPOS not configured';
+      if (!_softPosEnabled) return 'SoftPOS not configured';
+      return masked.isNotEmpty
+          ? 'SoftPOS terminal ($masked)'
+          : 'SoftPOS terminal';
     }
-    if (!_softPosEnabled) return '$name (off)';
-    return name;
+    if (!_softPosEnabled) {
+      return masked.isNotEmpty ? '$name ($masked · off)' : '$name (off)';
+    }
+    return masked.isNotEmpty ? '$name ($masked)' : name;
   }
 
   Future<void> _openSettingsKeepThisDialog() async {
@@ -697,18 +766,10 @@ class _SoftPosSendRequestDialogState extends State<_SoftPosSendRequestDialog> {
         );
       }
       final deviceId = (settings.deviceId ?? '').trim();
-      // Bound terminal: send via socket without Online/presence gate.
-      // Unbound legacy LAN path still requires /health.
       if (deviceId.isEmpty) {
-        final reachable = await SoftPosBridge.ping(
-          host: settings.host,
-          port: settings.port,
+        throw const SoftPosBridgeException(
+          'SoftPOS is not bound. Bind a terminal in SoftPOS settings first.',
         );
-        if (!reachable) {
-          throw const SoftPosBridgeException(
-            'Cannot reach SoftPOS. Open the SoftPOS app and keep it online.',
-          );
-        }
       }
 
       final order = widget.order;
@@ -762,51 +823,76 @@ class _SoftPosSendRequestDialogState extends State<_SoftPosSendRequestDialog> {
             ? order.vehicle!.plateNo.trim()
             : null,
         lineSummary: softPosLineSummaryFromOrder(order),
+        lineItems: softPosLineItemsFromOrder(order),
+        totalBeforeDiscount: softPosTotalBeforeDiscountFromOrder(order),
+        totalDiscount: softPosTotalDiscountFromOrder(order),
+        vatAmount: softPosVatFromOrder(order, amount: amount),
+        vehicleMake: (order.vehicle?.make ?? '').trim().isNotEmpty
+            ? order.vehicle!.make.trim()
+            : null,
+        vehicleModel: (order.vehicle?.model ?? '').trim().isNotEmpty
+            ? order.vehicle!.model.trim()
+            : null,
+        vehicleVin: (order.vehicle?.vin ?? '').trim().isNotEmpty
+            ? order.vehicle!.vin!.trim()
+            : null,
+        mileage: order.odometerReading > 0 ? order.odometerReading : null,
+        customerType: softPosCustomerTypeFromOrder(order),
+        customerTaxId: (order.customer?.vatNumber ?? '').trim().isNotEmpty
+            ? order.customer!.vatNumber.trim()
+            : null,
       );
-      final paymentFuture = deviceId.isNotEmpty
-          ? SoftPosBridge.requestPaymentViaSocket(request: payRequest)
-          : SoftPosBridge.requestPayment(
-              request: payRequest,
-              softPosHost: settings.host,
-              softPosPort: settings.port,
-            );
+      final paymentFuture =
+          SoftPosBridge.requestPaymentViaSocket(request: payRequest);
       final approved = await showSoftPosWaitingDialog(
         host,
         amount: amount,
         paymentFuture: paymentFuture.then((r) => r.approved),
       );
-      if (!navigator.mounted) return;
+      if (!navigator.mounted) {
+        widget.onCompleted?.call(false);
+        return;
+      }
       if (!approved) {
         ToastService.showError(host, 'SoftPOS payment was not approved');
+        widget.onCompleted?.call(false);
         return;
       }
 
-      // Lock order as prepaid so Orders Hub shows Paid + disables payment picker.
+      // Record received amount against the order (methods stay unlocked).
       if (posVm != null) {
         final err = await posVm.recordSoftPosAppBarPayment(
           order: order,
           paidAmount: amount,
           intentUuid: intentUuid,
         );
-        if (!navigator.mounted) return;
+        if (!navigator.mounted) {
+          widget.onCompleted?.call(false);
+          return;
+        }
         if (err != null) {
           ToastService.showError(host, err);
+          widget.onCompleted?.call(false);
           return;
         }
       } else {
         ToastService.showError(
           host,
-          'Payment approved on SoftPOS but order could not be marked paid. Sync and retry.',
+          'Payment approved on SoftPOS but could not be recorded on the order. Sync and retry.',
         );
+        widget.onCompleted?.call(false);
         return;
       }
       ToastService.showSuccess(
         host,
-        'Payment received — order marked as paid',
+        'Payment received — SAR ${amount.toStringAsFixed(2)} recorded',
       );
+      widget.onCompleted?.call(true);
     } on SoftPosBridgeException catch (e) {
+      widget.onCompleted?.call(false);
       if (mounted) ToastService.showError(context, e.message);
     } catch (e) {
+      widget.onCompleted?.call(false);
       if (mounted) ToastService.showError(context, e.toString());
     } finally {
       if (mounted) setState(() => _sending = false);
@@ -949,8 +1035,9 @@ class _SoftPosSendRequestDialogState extends State<_SoftPosSendRequestDialog> {
               const SizedBox(height: 12),
               TextField(
                 controller: _amountCtrl,
-                autofocus: true,
+                autofocus: !widget.lockAmount,
                 enabled: !_sending,
+                readOnly: widget.lockAmount,
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
                 inputFormatters: [
@@ -998,8 +1085,12 @@ class _SoftPosSendRequestDialogState extends State<_SoftPosSendRequestDialog> {
                 children: [
                   Expanded(
                     child: ElevatedButton(
-                      onPressed:
-                          _sending ? null : () => Navigator.of(context).pop(),
+                      onPressed: _sending
+                          ? null
+                          : () {
+                              widget.onCompleted?.call(false);
+                              Navigator.of(context).pop();
+                            },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.secondaryLight,
                         foregroundColor: Colors.white,
@@ -1365,10 +1456,11 @@ class _OrdersHubSoftPosAppBarActionState
       );
 
   String get _pillText {
-    final base = _status.pillText;
     final name = (_deviceLabel ?? '').trim();
-    if (!_enabled || name.isEmpty) return base;
-    return '$base · $name';
+    // Bound SoftPOS: show device name only — no "Connected" label.
+    if (!_enabled) return 'SoftPOS · Disconnected';
+    if (name.isNotEmpty) return 'SoftPOS · $name';
+    return 'SoftPOS';
   }
 
   @override
@@ -1397,6 +1489,43 @@ class _OrdersHubSoftPosAppBarActionState
   }
 
   Future<void> _pingNow() async {
+    // Authoritative source: server binding for this cashier's current branch.
+    SoftPosTerminalItem? serverBound;
+    var serverChecked = false;
+    try {
+      serverBound = await SoftPosTerminalsApi().getBinding();
+      serverChecked = true;
+    } catch (_) {
+      // Keep last local state if API is unreachable.
+    }
+
+    if (serverChecked) {
+      if (serverBound == null) {
+        await SoftPosSettings.clearBinding();
+        if (!mounted) return;
+        setState(() {
+          _enabled = false;
+          _reachable = false;
+          _deviceLabel = null;
+        });
+        return;
+      }
+      final host = (serverBound.lanHost ?? '').trim();
+      await SoftPosSettings.save(
+        enabled: true,
+        host: SoftPosSettings.isPlausibleHost(host)
+            ? host
+            : SoftPosSettings.defaultHost,
+        port: serverBound.lanPort ?? SoftPosSettings.defaultPort,
+        deviceId: serverBound.deviceId,
+        terminalId: (serverBound.nearpayTerminalId ??
+                serverBound.terminalTid ??
+                serverBound.terminalId)
+            ?.trim(),
+        deviceLabel: serverBound.label,
+      );
+    }
+
     final cfg = await SoftPosSettings.load();
     if (!mounted) return;
     final label = (cfg.deviceLabel ?? '').trim();
@@ -1416,19 +1545,10 @@ class _OrdersHubSoftPosAppBarActionState
         _deviceLabel = label.isEmpty ? null : label;
       });
     }
-    // Prefer backend socket presence (works without same Wi‑Fi / LAN IP).
-    // LAN /health is only a fallback when no device is bound.
     final deviceId = (cfg.deviceId ?? '').trim();
-    final bool ok;
-    if (deviceId.isNotEmpty) {
-      ok = await SoftPosBridge.isBoundDeviceOnline();
-    } else {
-      ok = await SoftPosBridge.ping(
-        host: cfg.host,
-        port: cfg.port,
-        attempts: 1,
-      );
-    }
+    final ok = deviceId.isNotEmpty
+        ? await SoftPosBridge.isBoundDeviceOnline()
+        : false;
     if (mounted) {
       setState(() {
         _enabled = true;
@@ -1438,58 +1558,18 @@ class _OrdersHubSoftPosAppBarActionState
     }
   }
 
-  Future<void> _openPaymentForSelectedOrder() async {
-    PosViewModel? posVm;
-    try {
-      posVm = context.read<PosViewModel>();
-    } catch (_) {
-      ToastService.showError(context, 'POS session not available');
-      return;
-    }
-    final order = posVm.selectedOrder;
-    if (order == null) {
-      ToastService.showError(context, 'Select an order first');
-      return;
-    }
-    if (order.isPosPrepaid) {
-      ToastService.showInfo(
-        context,
-        'This order is already paid. Enter customer details and generate invoice.',
-      );
-      return;
-    }
-    final suggested = _orderHasProductsOrServices(order)
-        ? order.draftPosOrderPayableDisplay
-        : 0.0;
-    await showSoftPosSendRequestDialog(
-      context,
-      order: order,
-      suggestedAmount: suggested > 0.0001 ? suggested : null,
-      skipReadyGate: true,
-    );
-  }
-
-  /// Tap: bound SoftPOS → amount popup (Online/Offline does not block).
-  /// Only Disconnected opens terminal settings. Long-press still opens settings.
+  /// Tap opens SoftPOS terminal settings only.
+  /// Payment receive popup lives under Edit customer → Tap to Pay.
   Future<void> _onSoftPosTap() async {
     if (_editDialogOpen) return;
     _editDialogOpen = true;
     try {
-      if (_enabled) {
-        // Connected — open amount request even if pill says Offline.
-        await _openPaymentForSelectedOrder();
-      } else {
-        final saved = await showSoftPosSettingsDialog(context);
-        if (!mounted) return;
-        await _pingNow();
-        if (saved || _enabled) {
-          await _openPaymentForSelectedOrder();
-        }
-      }
+      await showSoftPosSettingsDialog(context);
+      if (!mounted) return;
+      await _pingNow();
     } finally {
       if (mounted) _editDialogOpen = false;
     }
-    unawaited(_pingNow());
   }
 
   Future<void> _onSoftPosLongPress() async {

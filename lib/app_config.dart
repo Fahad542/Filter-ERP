@@ -37,7 +37,7 @@ abstract final class AppConfig {
   static const String sandboxApplicationId = 'com.filter.hub';
   static const String productionApplicationId = 'com.filter.hub';
 
-  static const String sandboxDisplayName = 'Filter Hub Sandbox';
+  static const String sandboxDisplayName = 'Filter Hub';
   static const String productionDisplayName = 'Filter Hub';
 
   static const bool isProduction = environment == AppRunEnvironment.production;

@@ -3183,7 +3183,7 @@ class AppLocalizationsAr extends AppLocalizations {
   String get posOrdersAddCustomerDetails => 'إضافة بيانات العميل';
 
   @override
-  String get posOrdersSelectPaymentMethod => 'اختر الدفع';
+  String get posOrdersSelectPaymentMethod => 'اختر طريقة الدفع';
 
   @override
   String get posOrdersSelectYourPaymentMethod => 'يرجى اختيار طريقة الدفع';
@@ -5289,6 +5289,10 @@ class AppLocalizationsAr extends AppLocalizations {
   String get posPaymentsLineMinimum => 'يجب ألا يقل كل سطر دفع عن 0.01 ر.س.';
 
   @override
+  String get posPaymentsEnterSelectedAmounts =>
+      'يرجى إدخال المبلغ لكل طريقة دفع محددة.';
+
+  @override
   String posPaymentsSplitMismatch(String payable, String current) {
     return 'يجب أن يساوي إجمالي التقسيم مبلغ الطلب المستحق ($payable ر.س). الحالي: $current ر.س.';
   }
@@ -6634,7 +6638,7 @@ class AppLocalizationsAr extends AppLocalizations {
   }
 
   @override
-  String get posOrdersChecklistOptional => 'قائمة الفحص (اختياري)';
+  String get posOrdersChecklistOptional => 'اختيار قائمة الفحص';
 
   @override
   String get posOrdersChecklistSelectAll => 'تحديد الكل';

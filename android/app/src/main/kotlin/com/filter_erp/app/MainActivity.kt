@@ -1,9 +1,15 @@
 package com.filter_erp.app
 
+import android.app.ActivityOptions
+import android.app.PendingIntent
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -22,12 +28,14 @@ class MainActivity : FlutterActivity() {
                 "sharePdf" -> {
                     val path = call.argument<String>("path")
                     val phone = call.argument<String>("phone")
+                    val caption = call.argument<String>("caption") ?: "Here is your invoice"
+                    val business = call.argument<Boolean>("business") == true
                     if (path.isNullOrBlank() || phone.isNullOrBlank()) {
                         result.error("bad_args", "path and phone required", null)
                         return@setMethodCallHandler
                     }
                     try {
-                        result.success(sharePdfToWhatsApp(path, phone))
+                        result.success(sharePdfToWhatsApp(path, phone, caption, business))
                     } catch (e: Exception) {
                         result.error("share_failed", e.message, null)
                     }
@@ -76,51 +84,121 @@ class MainActivity : FlutterActivity() {
         if (!isWhatsAppInstalled(business)) return false
 
         val encoded = URLEncoder.encode(text, "UTF-8").replace("+", "%20")
-        val candidates = listOf(
-            Uri.parse("https://api.whatsapp.com/send?phone=$phone&text=$encoded"),
+        // Click-to-chat opens unsaved numbers. Package is pinned so the browser page does not show.
+        val intent = Intent(
+            Intent.ACTION_VIEW,
             Uri.parse("https://wa.me/$phone?text=$encoded"),
-            Uri.parse("whatsapp://send?phone=$phone&text=$encoded"),
-        )
-
-        for (uri in candidates) {
-            val intent = Intent(Intent.ACTION_VIEW, uri).apply {
-                setPackage(pkg)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            if (intent.resolveActivity(packageManager) != null) {
-                startActivity(intent)
-                return true
-            }
+        ).apply {
+            setPackage(pkg)
+            addCategory(Intent.CATEGORY_DEFAULT)
+            addCategory(Intent.CATEGORY_BROWSABLE)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        return false
+        return try {
+            startActivity(intent)
+            true
+        } catch (_: ActivityNotFoundException) {
+            false
+        }
     }
 
-    private fun sharePdfToWhatsApp(path: String, phone: String): Boolean {
+    private fun sharePdfToWhatsApp(
+        path: String,
+        phone: String,
+        caption: String,
+        business: Boolean,
+    ): Boolean {
         val file = File(path)
         if (!file.exists()) {
             throw IllegalArgumentException("PDF file is missing")
         }
+        val pkg = whatsAppPackage(business)
+        if (!isWhatsAppInstalled(business)) return false
         val uri = FileProvider.getUriForFile(
             this,
             "$packageName.whatsappshare",
             file,
         )
-        val jid = "$phone@s.whatsapp.net"
-        val packages = listOf("com.whatsapp", "com.whatsapp.w4b")
-        for (pkg in packages) {
-            val intent = Intent(Intent.ACTION_SEND).apply {
-                type = "application/pdf"
-                setPackage(pkg)
-                putExtra(Intent.EXTRA_STREAM, uri)
-                putExtra("jid", jid)
-                clipData = ClipData.newRawUri("invoice", uri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val digits = phone.filter { it.isDigit() }
+        if (digits.isEmpty()) return false
+        val jid = "$digits@s.whatsapp.net"
+        val message = caption.trim().ifEmpty { "Here is your invoice" }
+        grantUriPermission(pkg, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+
+        // Click-to-chat opens unsaved numbers and prefills the caption.
+        // The PDF is sent on a second intent once that chat exists. A plain
+        // delayed startActivity is blocked once WhatsApp is in front, so the
+        // share is a PendingIntent created while this app is still foreground.
+        val openedChat = openUnsavedChat(pkg, digits, message)
+        val share = pdfShareIntent(pkg, uri, jid, message)
+        if (!openedChat) {
+            return try {
+                startActivity(share)
+                true
+            } catch (_: ActivityNotFoundException) {
+                false
             }
-            if (intent.resolveActivity(packageManager) == null) continue
-            grantUriPermission(pkg, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            startActivity(intent)
-            return true
+        }
+        schedulePdfShare(share)
+        return true
+    }
+
+    private fun schedulePdfShare(share: Intent) {
+        val options = ActivityOptions.makeBasic()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            options.setPendingIntentBackgroundActivityStartMode(
+                ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED,
+            )
+        }
+        val pending = PendingIntent.getActivity(
+            this,
+            41,
+            share,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            options.toBundle(),
+        )
+        Handler(Looper.getMainLooper()).postDelayed({
+            try {
+                pending.send()
+            } catch (_: Exception) {
+            }
+        }, 900)
+    }
+
+    private fun openUnsavedChat(pkg: String, digits: String, caption: String): Boolean {
+        val encoded = URLEncoder.encode(caption, "UTF-8").replace("+", "%20")
+        val targets = listOf(
+            "https://wa.me/$digits?text=$encoded",
+            "https://api.whatsapp.com/send?phone=$digits&text=$encoded",
+            "whatsapp://send?phone=$digits&text=$encoded",
+        )
+        for (target in targets) {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(target)).apply {
+                setPackage(pkg)
+                addCategory(Intent.CATEGORY_DEFAULT)
+                addCategory(Intent.CATEGORY_BROWSABLE)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            try {
+                startActivity(intent)
+                return true
+            } catch (_: ActivityNotFoundException) {
+            } catch (_: SecurityException) {
+            }
         }
         return false
+    }
+
+    private fun pdfShareIntent(pkg: String, uri: Uri, jid: String, caption: String): Intent {
+        return Intent(Intent.ACTION_SEND).apply {
+            type = "application/pdf"
+            setPackage(pkg)
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_TEXT, caption)
+            putExtra("jid", jid)
+            clipData = ClipData.newRawUri("invoice", uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
     }
 }

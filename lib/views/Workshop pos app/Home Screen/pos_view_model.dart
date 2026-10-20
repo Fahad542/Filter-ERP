@@ -637,16 +637,32 @@ class PosViewModel extends ChangeNotifier with TranslatableMixin {
     return false;
   }
 
-  /// SoftPOS app-bar Send Request approved → lock order as prepaid (Tap to Pay).
-  /// Allowed even when order total is still 0 (products added later).
+  /// SoftPOS Tap to Pay approved → record received amount as prepaid.
   Future<String?> recordSoftPosAppBarPayment({
     required PosOrder order,
     required double paidAmount,
     String? intentUuid,
+  }) {
+    return recordAdvanceOrderPayment(
+      order: order,
+      method: PaymentMethod.tapToPay,
+      paidAmount: paidAmount,
+      intentUuid: intentUuid,
+      softPos: true,
+    );
+  }
+
+  /// Advance receive (total may be 0). Same method can be recorded many times;
+  /// amounts accumulate on the order. Payment method tiles stay unlocked.
+  Future<String?> recordAdvanceOrderPayment({
+    required PosOrder order,
+    required PaymentMethod method,
+    required double paidAmount,
+    String? intentUuid,
+    bool softPos = false,
   }) async {
     final orderId = order.id.trim();
     if (orderId.isEmpty) return 'Order id missing';
-    if (order.isPosPrepaid) return null;
     if (paidAmount <= 0.001) return 'Invalid amount';
 
     _requestingPaymentOrderId = orderId;
@@ -656,23 +672,25 @@ class PosViewModel extends ChangeNotifier with TranslatableMixin {
       final token = await sessionService.getToken();
       if (token == null) return 'Session expired. Sign in again.';
 
+      final methodLabel = method.label;
+      final source = softPos || method == PaymentMethod.tapToPay
+          ? 'softpos_app_bar'
+          : 'advance_receive';
       final paymentSplits = <Map<String, dynamic>>[
         {
-          'method': PaymentMethod.tapToPay.label,
+          'method': methodLabel,
           'amount': paidAmount,
-          'source': 'softpos_app_bar',
+          'source': source,
         },
       ];
       final prepaidRows = [
         PosPaymentDraftRow(
-          method: PaymentMethod.tapToPay.label,
+          method: methodLabel,
           amount: paidAmount,
-          source: 'softpos_app_bar',
+          source: source,
         ),
       ];
 
-      // Skip payment-method PATCH — it rejects zero-total orders. SoftPOS
-      // app-bar prepayment endpoint records paid amount + locks the order.
       final res = await posRepository.recordOrderPrepayment(
         orderId: orderId,
         token: token,
@@ -689,13 +707,12 @@ class PosViewModel extends ChangeNotifier with TranslatableMixin {
             : 'Could not record payment.';
       }
 
-      // Instant PAID badge / banner — do not wait on coalesced list GET
-      // (stale in-flight fetch can wipe prepaid until Edit customer reloads).
       _applyPosPrepaidToHub(
         orderId: orderId,
         paidAmount: paidAmount,
         payments: prepaidRows,
         intentUuid: intentUuid,
+        accumulate: true,
       );
       _hydrateInvoicePaymentDefaultsForSelectedOrder();
       notifyListeners();
@@ -720,18 +737,25 @@ class PosViewModel extends ChangeNotifier with TranslatableMixin {
     required double paidAmount,
     required List<PosPaymentDraftRow> payments,
     String? intentUuid,
+    bool accumulate = false,
   }) {
     final id = orderId.trim();
     if (id.isEmpty) return;
 
     PosOrder patch(PosOrder o) {
       if (o.id.trim() != id) return o;
+      final prevAmt = accumulate ? (o.posPrepaidAmount ?? 0) : 0.0;
+      final prevRows = accumulate
+          ? List<PosPaymentDraftRow>.of(o.posPrepaidPayments ?? const [])
+          : <PosPaymentDraftRow>[];
+      final nextRows = [...prevRows, ...payments];
+      final nextAmt = prevAmt + paidAmount;
       return o.copyWith(
-        posPrepaidAmount: paidAmount,
+        posPrepaidAmount: nextAmt,
         posPrepaidAt: DateTime.now().toUtc().toIso8601String(),
-        posPrepaidPayments: payments,
-        posPrepaidIntentId: intentUuid,
-        posPayments: payments,
+        posPrepaidPayments: nextRows,
+        posPrepaidIntentId: intentUuid ?? o.posPrepaidIntentId,
+        posPayments: nextRows,
         posCustomerKind: (o.posCustomerKind ?? '').trim().isNotEmpty
             ? o.posCustomerKind
             : 'individual',
@@ -1381,23 +1405,35 @@ class PosViewModel extends ChangeNotifier with TranslatableMixin {
 
   /// Persists cashier payment-modal selection (customer kind + rows) via
   /// `PATCH /cashier/order/:orderId/payment-method` before invoice creation.
+  ///
+  /// [alreadyReceived] = SoftPOS / advance prepaid already on the order.
+  /// Typed split amounts only need to cover the **remaining** payable.
   Future<String?> persistCashierOrderPaymentDraft({
     required String orderId,
     required bool isCorporate,
     required Set<PaymentMethod> methods,
     required Map<PaymentMethod, double> paymentAmounts,
     required double payableTotal,
+    double alreadyReceived = 0,
   }) async {
     if (methods.isEmpty) return 'Choose at least one payment method.';
     double sum = 0;
     final rows = <Map<String, dynamic>>[];
     final payable = payableTotal > 0 ? payableTotal : 0.0;
+    final prepaid = alreadyReceived > 0 ? alreadyReceived : 0.0;
+    // Remaining to collect via this draft (0 when advance already covers).
+    final remainingDue =
+        (payable - prepaid).clamp(0.0, double.infinity);
+    if (remainingDue <= 0.05) {
+      // Already fully paid via SoftPOS / advance — nothing to draft-match.
+      return null;
+    }
     for (final pm in methods) {
       if (pm == PaymentMethod.employees) continue;
       final double amt;
       if (methods.length == 1) {
         final v = paymentAmounts[pm];
-        amt = (v != null && v > 0) ? v : payable;
+        amt = (v != null && v > 0) ? v : remainingDue;
       } else {
         amt = paymentAmounts[pm] ?? 0;
       }
@@ -1411,9 +1447,12 @@ class PosViewModel extends ChangeNotifier with TranslatableMixin {
       });
     }
     if (rows.isEmpty) return 'Choose at least one payment method.';
-    if ((sum - payable).abs() > 0.05) {
+    // Underpay blocked here only when nothing remains due. Over/under match
+    // against the invoice total is enforced on Generate Invoice.
+    if (sum + 0.05 < remainingDue) {
       return 'Split totals must equal the order payable amount '
-          '(${payable.toStringAsFixed(2)} SAR). Currently: ${sum.toStringAsFixed(2)} SAR.';
+          '(${payable.toStringAsFixed(2)} SAR). Currently: '
+          '${(prepaid + sum).toStringAsFixed(2)} SAR.';
     }
     rows.sort((a, b) =>
         (a['method'] as String).compareTo(b['method'] as String));
@@ -1529,24 +1568,22 @@ class PosViewModel extends ChangeNotifier with TranslatableMixin {
       }
 
       String? intentUuid;
-      if (isCorporate != true) {
-        try {
-          final softResult = await runSoftPosRequestPayment(
-            context: context,
-            order: order,
-            paymentSplits: paymentSplits,
-            customerNameOverride: customerNameOverride,
-            customerMobileOverride: customerMobileOverride,
-            plateNoOverride: plateNoOverride,
-          );
-          if (!context.mounted) return 'Payment cancelled';
-          if (!softResult.approved) {
-            return 'Card payment was not approved on SoftPOS.';
-          }
-          intentUuid = softResult.intentUuid;
-        } on SoftPosBridgeException catch (e) {
-          return e.message;
+      try {
+        final softResult = await runSoftPosRequestPayment(
+          context: context,
+          order: order,
+          paymentSplits: paymentSplits,
+          customerNameOverride: customerNameOverride,
+          customerMobileOverride: customerMobileOverride,
+          plateNoOverride: plateNoOverride,
+        );
+        if (!context.mounted) return 'Payment cancelled';
+        if (!softResult.approved) {
+          return 'Card payment was not approved on SoftPOS.';
         }
+        intentUuid = softResult.intentUuid;
+      } on SoftPosBridgeException catch (e) {
+        return e.message;
       }
 
       final res = await posRepository.recordOrderPrepayment(

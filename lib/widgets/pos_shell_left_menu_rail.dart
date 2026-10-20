@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
-import '../services/softpos_access_service.dart';
 import '../utils/app_colors.dart';
 
 /// Shell tab index for Orders Hub — rail hidden; menu stays in the app bar.
@@ -58,12 +57,6 @@ List<PosShellRailNavEntry> buildPosShellRailNavEntries(AppLocalizations l10n) {
       label: 'AI Orders',
       icon: Icons.videocam_outlined,
     ),
-    if (isSoftPosUiEnabled)
-      const PosShellRailNavEntry(
-        shellIndex: kPosShellNfcAdjustmentsTabIndex,
-        label: 'Soft POS\nAdjustment',
-        icon: Icons.nfc_rounded,
-      ),
     PosShellRailNavEntry(
       shellIndex: 9,
       label: l10n.posNavTakeaway,

@@ -1,3 +1,5 @@
+import 'dart:math' show min;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -87,6 +89,30 @@ class _TakeawayCheckoutDetailsDialogState
     extends State<_TakeawayCheckoutDetailsDialog> {
   final _customerKey = GlobalKey<WalkInInvoiceDetailsDialogState>();
   final _paymentKey = GlobalKey<InvoicePaymentChoicePanelState>();
+  late bool? _isCorporate;
+
+  @override
+  void initState() {
+    super.initState();
+    _isCorporate = widget.initialIsCorporate;
+    if (_isCorporate == true) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        context.read<PosViewModel>().fetchCorporateAccounts(silent: true);
+      });
+    }
+  }
+
+  void _onCustomerTypeChanged(bool? isCorporate) {
+    final wasCorporate = _isCorporate == true;
+    setState(() => _isCorporate = isCorporate);
+    if (isCorporate == true && mounted) {
+      context.read<PosViewModel>().fetchCorporateAccounts(silent: true);
+    } else if (isCorporate == false && wasCorporate) {
+      // Individual: wipe corporate-filled name/mobile/VAT.
+      _customerKey.currentState?.clearCustomerIdentityFields();
+    }
+  }
 
   Future<void> _submit() async {
     final customer = await _customerKey.currentState?.saveCustomerDetails();
@@ -114,7 +140,10 @@ class _TakeawayCheckoutDetailsDialogState
     final l10n = AppLocalizations.of(context)!;
     final size = MediaQuery.sizeOf(context);
     final isTablet = size.width > 600;
-    final hubInsets = posOrdersHubDialogInsets(size);
+    // Narrow single-column sheet (customer details + payment stacked).
+    final maxDialogWidth = min(440.0, size.width - 40);
+    final horizontalInset = ((size.width - maxDialogWidth) / 2).clamp(16.0, 80.0);
+    final verticalInset = size.height * (isTablet ? 0.06 : 0.05);
     final posVm = context.read<PosViewModel>();
 
     return AnimatedPadding(
@@ -122,14 +151,18 @@ class _TakeawayCheckoutDetailsDialogState
       curve: Curves.easeOutCubic,
       padding: EdgeInsets.only(bottom: widget.keyboardBottomInset),
       child: Dialog(
-        insetPadding: hubInsets,
+        insetPadding: EdgeInsets.symmetric(
+          horizontal: horizontalInset,
+          vertical: verticalInset,
+        ),
         backgroundColor: const Color(0xFFFBF9F6),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         clipBehavior: Clip.antiAlias,
         child: ConstrainedBox(
           constraints: BoxConstraints(
+            maxWidth: maxDialogWidth,
             maxHeight:
-                size.height - hubInsets.vertical - widget.keyboardBottomInset,
+                size.height - (verticalInset * 2) - widget.keyboardBottomInset,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -140,60 +173,45 @@ class _TakeawayCheckoutDetailsDialogState
                 onClose: () => Navigator.of(context).pop(),
               ),
               Expanded(
-                child: Padding(
+                child: SingleChildScrollView(
                   padding: EdgeInsets.fromLTRB(
                     isTablet ? 16 : 12,
                     8,
                     isTablet ? 16 : 12,
                     12,
                   ),
-                  child: IntrinsicHeight(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Expanded(
-                          child: SingleChildScrollView(
-                            // Same customer form + fonts as Orders Edit Customer Details.
-                            child: WalkInInvoiceDetailsDialog(
-                              key: _customerKey,
-                              embedded: true,
-                              showVehicleSection: false,
-                              showOptionalPlateField: true,
-                              standaloneInitial: widget.initialCustomer,
-                              posVm: posVm,
-                            ),
-                          ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      WalkInInvoiceDetailsDialog(
+                        key: _customerKey,
+                        embedded: true,
+                        showVehicleSection: false,
+                        showOptionalPlateField: true,
+                        standaloneInitial: widget.initialCustomer,
+                        posVm: posVm,
+                        corporateNameAsDropdown: _isCorporate == true,
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        l10n.posTakeawaySelectPayment,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w800,
+                          fontSize: 13,
+                          color: Color(0xFF1E2124),
                         ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: SingleChildScrollView(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                Text(
-                                  l10n.posTakeawaySelectPayment,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w800,
-                                    fontSize: 13,
-                                    color: Color(0xFF1E2124),
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                InvoicePaymentChoicePanel(
-                                  key: _paymentKey,
-                                  embedded: true,
-                                  initialIsCorporate: widget.initialIsCorporate,
-                                  initialPayments: widget.initialPayments,
-                                  initialPaymentAmounts:
-                                      widget.initialPaymentAmounts,
-                                  totalAmount: widget.totalAmount,
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
+                      ),
+                      const SizedBox(height: 8),
+                      InvoicePaymentChoicePanel(
+                        key: _paymentKey,
+                        embedded: true,
+                        initialIsCorporate: widget.initialIsCorporate,
+                        initialPayments: widget.initialPayments,
+                        initialPaymentAmounts: widget.initialPaymentAmounts,
+                        totalAmount: widget.totalAmount,
+                        onCustomerTypeChanged: _onCustomerTypeChanged,
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -205,38 +223,37 @@ class _TakeawayCheckoutDetailsDialogState
                   isTablet ? 12 : 10,
                 ),
                 child: Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
                   children: [
-                    TextButton(
-                      style: TextButton.styleFrom(
-                        backgroundColor: AppColors.secondaryLight,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 10,
+                    Expanded(
+                      child: TextButton(
+                        style: TextButton.styleFrom(
+                          backgroundColor: AppColors.secondaryLight,
+                          foregroundColor: Colors.white,
+                          minimumSize: const Size.fromHeight(44),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
                         ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: Text(l10n.posCommonCancel),
                       ),
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: Text(l10n.posCommonCancel),
                     ),
-                    const SizedBox(width: 8),
-                    FilledButton(
-                      style: FilledButton.styleFrom(
-                        backgroundColor: AppColors.primaryLight,
-                        foregroundColor: AppColors.onPrimaryLight,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 10,
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: FilledButton(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: AppColors.primaryLight,
+                          foregroundColor: AppColors.onPrimaryLight,
+                          minimumSize: const Size.fromHeight(44),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
+                          ),
                         ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
+                        onPressed: _submit,
+                        child: Text(l10n.posCommonSave),
                       ),
-                      onPressed: _submit,
-                      child: Text(l10n.posCommonSave),
                     ),
                   ],
                 ),

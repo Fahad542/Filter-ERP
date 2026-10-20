@@ -754,11 +754,17 @@ class PosOrder {
     return (currentTotal - posPrepaidAmount!).abs() <= 0.05;
   }
 
-  /// SoftPOS app-bar: invoice allowed even when totals differ.
+  /// Received SoftPOS/prepaid covers the invoice total (equal or over).
+  bool prepaidCoversInvoiceTotal(double currentTotal) {
+    if (!isPosPrepaid) return true;
+    return (posPrepaidAmount ?? 0) + 0.05 >= currentTotal;
+  }
+
+  /// Invoice only when no prepaid, or prepaid ≥ current total.
+  /// Underpayment is never allowed (cashier must collect the remainder first).
   bool canInvoiceWithPrepaidMismatch(double currentTotal) {
     if (!isPosPrepaid) return true;
-    if (prepaidAmountMatchesTotal(currentTotal)) return true;
-    return isSoftPosAppBarPrepaid;
+    return prepaidCoversInvoiceTotal(currentTotal);
   }
 
   String get prepaidPaymentMethodLabel {

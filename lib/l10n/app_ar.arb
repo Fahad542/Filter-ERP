@@ -1386,7 +1386,7 @@
   "posOrdersSelectFromList": "اختر طلباً من القائمة على اليسار لعرض التفاصيل",
   "posOrdersAddDepartment": "إضافة قسم",
   "posOrdersAddCustomerDetails": "إضافة بيانات العميل",
-  "posOrdersSelectPaymentMethod": "اختر الدفع",
+  "posOrdersSelectPaymentMethod": "اختر طريقة الدفع",
   "posOrdersSelectYourPaymentMethod": "يرجى اختيار طريقة الدفع",
   "posOrdersCustomerDetailsSaved": "تم حفظ بيانات العميل",
   "posOrdersPaymentMethodSaved": "تم حفظ طريقة الدفع",
@@ -2357,6 +2357,7 @@
   "posDeptLoadError": "فشل تحميل الأقسام",
   "posPaymentsChooseMethod": "اختر طريقة دفع واحدة على الأقل.",
   "posPaymentsLineMinimum": "يجب ألا يقل كل سطر دفع عن 0.01 ر.س.",
+  "posPaymentsEnterSelectedAmounts": "يرجى إدخال المبلغ لكل طريقة دفع محددة.",
   "posPaymentsSplitMismatch": "يجب أن يساوي إجمالي التقسيم مبلغ الطلب المستحق ({payable} ر.س). الحالي: {current} ر.س.",
   "@posPaymentsSplitMismatch": {
     "placeholders": {
@@ -3178,7 +3179,7 @@
   "posOrdersPleaseSignInAgain": "يرجى تسجيل الدخول مرة أخرى.",
   "posSessionClosedLoggedOut": "تم إغلاق جلسة ورديتك مسبقاً، لذلك تم تسجيل خروجك.",
   "posOrdersQtyWithoutVat": "الكمية {qty} × {price} بدون ضريبة",
-  "posOrdersChecklistOptional": "قائمة الفحص (اختياري)",
+  "posOrdersChecklistOptional": "اختيار قائمة الفحص",
   "posOrdersChecklistSelectAll": "تحديد الكل",
   "posOrdersChecklistClearAll": "مسح الكل",
   "posOrdersEditCustomerDetails": "تعديل بيانات العميل",

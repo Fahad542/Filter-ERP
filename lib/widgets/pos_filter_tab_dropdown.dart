@@ -26,6 +26,7 @@ class PosFilterTabDropdown extends StatelessWidget {
     required this.onSelected,
     this.title,
     this.height = dateChipHeight,
+    this.expand = false,
   });
 
   final String selectedId;
@@ -33,6 +34,8 @@ class PosFilterTabDropdown extends StatelessWidget {
   final ValueChanged<String> onSelected;
   final String? title;
   final double? height;
+  /// When true, fills parent width (e.g. Expanded in a Row).
+  final bool expand;
 
   String _labelOf(PosFilterTabOption option) {
     if (option.count == null) return option.label;
@@ -101,7 +104,7 @@ class PosFilterTabDropdown extends StatelessWidget {
     final label = selected == null ? '—' : _labelOf(selected);
 
     return SizedBox(
-      width: dropdownWidth,
+      width: expand ? double.infinity : dropdownWidth,
       height: height,
       child: Material(
         color: Colors.white,

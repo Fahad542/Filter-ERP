@@ -1903,22 +1903,43 @@ class _PosTakeawayViewState extends State<PosTakeawayView> {
       vm.setPayments(payments);
     }
 
-    // SoftPOS / NFC — only when Tap to Pay is in the payment splits.
-    if (vm.isCorporate != true && SoftPosBridge.splitsIncludeSoftPos(payments)) {
+    // SoftPOS / NFC — when Tap to Pay is in the payment splits (retail + corporate).
+    if (SoftPosBridge.splitsIncludeSoftPos(payments)) {
       if (!await SoftPosConnectionGuard.ensureStableOrToast(context)) return;
       if (!context.mounted) return;
       try {
-        final lineSummary = vm.cart
+        final lineItems = vm.cart
+            .map(
+              (l) => <String, dynamic>{
+                'name': l.product.name.trim(),
+                'qty': l.qty,
+                // SoftPOS Base Price is VAT-exclusive.
+                'unitPrice': double.parse(
+                  (l.unitPriceExclVat > 0
+                          ? l.unitPriceExclVat
+                          : l.unitPrice / 1.15)
+                      .toStringAsFixed(2),
+                ),
+              },
+            )
+            .where((m) => (m['name'] as String).isNotEmpty)
+            .toList();
+        final lineSummary = lineItems
             .take(3)
-            .map((l) => l.product.name.trim())
-            .where((n) => n.isNotEmpty)
+            .map((m) => m['name'] as String)
             .join(', ');
+        final softPosAmount =
+            SoftPosBridge.softPosAmountFromSplits(payments);
         final softPosOk = await runSoftPosBeforeTakeawayCheckout(
           context: context,
           paymentSplits: payments,
           customerName: vm.customerNameController.text.trim(),
           customerMobile: vm.customerMobileController.text.trim(),
           lineSummary: lineSummary.isEmpty ? 'Takeaway' : lineSummary,
+          lineItems: lineItems,
+          totalDiscount: 0,
+          vatAmount:
+              ((softPosAmount * 15) / 115 * 100).roundToDouble() / 100,
         );
         if (!context.mounted) return;
         if (!softPosOk) {

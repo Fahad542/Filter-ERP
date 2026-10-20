@@ -8,6 +8,9 @@ class SoftPosTerminalItem {
     required this.label,
     required this.online,
     required this.bound,
+    this.boundToOther = false,
+    this.boundByUserId,
+    this.boundByName,
     this.lanHost,
     this.lanPort,
     this.terminalId,
@@ -20,7 +23,12 @@ class SoftPosTerminalItem {
   final String deviceId;
   final String label;
   final bool online;
+  /// Bound to the current cashier.
   final bool bound;
+  /// Bound to a different cashier in this branch (not connectable).
+  final bool boundToOther;
+  final String? boundByUserId;
+  final String? boundByName;
   final String? lanHost;
   final int? lanPort;
   final String? terminalId;
@@ -36,11 +44,15 @@ class SoftPosTerminalItem {
     final t = terminal is Map
         ? Map<String, dynamic>.from(terminal)
         : <String, dynamic>{};
+    final boundByName = (json['boundByName'] ?? '').toString().trim();
     return SoftPosTerminalItem(
       deviceId: (json['deviceId'] ?? '').toString(),
       label: (json['label'] ?? 'SoftPOS').toString(),
       online: json['online'] == true,
       bound: json['bound'] == true,
+      boundToOther: json['boundToOther'] == true,
+      boundByUserId: json['boundByUserId']?.toString(),
+      boundByName: boundByName.isEmpty ? null : boundByName,
       lanHost: json['lanHost']?.toString(),
       lanPort: json['lanPort'] is num
           ? (json['lanPort'] as num).toInt()

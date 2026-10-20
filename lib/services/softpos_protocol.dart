@@ -1,7 +1,10 @@
-/// LAN bridge contract between Filter POS and SoftPOS (demo until bank SDK).
+/// SoftPOS payment bridge contract (backend Socket.IO).
 abstract final class SoftPosProtocol {
   static const defaultServerPort = 8787;
   static const defaultCallbackPort = 8788;
+
+  /// Sentinel callback — SoftPOS reports results to the backend, not LAN.
+  static const socketCallbackUrl = 'socket://backend';
 
   static const statusApproved = 'approved';
   static const statusDeclined = 'declined';
@@ -18,7 +21,18 @@ class SoftPosPaymentRequest {
   final String? customerName;
   final String? customerMobile;
   final String? plateNo;
+  final String? vehicleMake;
+  final String? vehicleModel;
+  final String? vehicleVin;
+  final int? mileage;
+  final int? nextOilChangeKm;
+  final String? customerType;
+  final String? customerTaxId;
   final String? lineSummary;
+  final List<Map<String, dynamic>> lineItems;
+  final double? totalBeforeDiscount;
+  final double? totalDiscount;
+  final double? vatAmount;
   final String paymentLabel;
   final String? intentUuid;
 
@@ -32,7 +46,18 @@ class SoftPosPaymentRequest {
     this.customerName,
     this.customerMobile,
     this.plateNo,
+    this.vehicleMake,
+    this.vehicleModel,
+    this.vehicleVin,
+    this.mileage,
+    this.nextOilChangeKm,
+    this.customerType,
+    this.customerTaxId,
     this.lineSummary,
+    this.lineItems = const [],
+    this.totalBeforeDiscount,
+    this.totalDiscount,
+    this.vatAmount,
     this.paymentLabel = 'Tap to Pay',
     this.intentUuid,
   });
@@ -47,7 +72,19 @@ class SoftPosPaymentRequest {
         if (customerName != null) 'customerName': customerName,
         if (customerMobile != null) 'customerMobile': customerMobile,
         if (plateNo != null) 'plateNo': plateNo,
+        if (vehicleMake != null) 'vehicleMake': vehicleMake,
+        if (vehicleModel != null) 'vehicleModel': vehicleModel,
+        if (vehicleVin != null) 'vehicleVin': vehicleVin,
+        if (mileage != null) 'mileage': mileage,
+        if (nextOilChangeKm != null) 'nextOilChangeKm': nextOilChangeKm,
+        if (customerType != null) 'customerType': customerType,
+        if (customerTaxId != null) 'customerTaxId': customerTaxId,
         if (lineSummary != null) 'lineSummary': lineSummary,
+        if (lineItems.isNotEmpty) 'lineItems': lineItems,
+        if (totalBeforeDiscount != null)
+          'totalBeforeDiscount': totalBeforeDiscount,
+        if (totalDiscount != null) 'totalDiscount': totalDiscount,
+        if (vatAmount != null) 'vatAmount': vatAmount,
         'paymentLabel': paymentLabel,
         if (intentUuid != null && intentUuid!.isNotEmpty)
           'intentUuid': intentUuid,

@@ -1386,7 +1386,7 @@
   "posOrdersSelectFromList": "Select an order from the list on the left to view details",
   "posOrdersAddDepartment": "ADD DEPARTMENT",
   "posOrdersAddCustomerDetails": "Add customer details",
-  "posOrdersSelectPaymentMethod": "Select payment",
+  "posOrdersSelectPaymentMethod": "Select payment method",
   "posOrdersSelectYourPaymentMethod": "Select your payment method",
   "posOrdersCustomerDetailsSaved": "Customer details saved",
   "posOrdersPaymentMethodSaved": "Payment method saved",
@@ -2357,6 +2357,7 @@
   "posDeptLoadError": "Failed to load departments",
   "posPaymentsChooseMethod": "Choose at least one payment method.",
   "posPaymentsLineMinimum": "Each payment line must be at least 0.01 SAR.",
+  "posPaymentsEnterSelectedAmounts": "Please enter the amount for each selected payment method.",
   "posPaymentsSplitMismatch": "Split totals must equal the order payable amount ({payable} SAR). Currently: {current} SAR.",
   "@posPaymentsSplitMismatch": {
     "placeholders": {
@@ -3178,7 +3179,7 @@
   "posOrdersPleaseSignInAgain": "Please sign in again.",
   "posSessionClosedLoggedOut": "Your shift session was already closed, so you have been logged out.",
   "posOrdersQtyWithoutVat": "Qty {qty} × {price} Without VAT",
-  "posOrdersChecklistOptional": "Checklist (optional)",
+  "posOrdersChecklistOptional": "Select checklist",
   "posOrdersChecklistSelectAll": "Select all",
   "posOrdersChecklistClearAll": "Clear all",
   "posOrdersEditCustomerDetails": "Edit customer details",

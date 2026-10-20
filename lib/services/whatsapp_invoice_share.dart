@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/services.dart' show MethodChannel, PlatformException;
+import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -28,10 +29,16 @@ abstract final class WhatsappInvoiceShare {
     return d;
   }
 
-  /// Prefer Dart [Directory.systemTemp] — avoids `path_provider` → `objective_c`
-  /// FFI crashes on some iOS Simulator / Flutter SDK combos (`DOBJC_initializeApi`).
-  static Directory _invoiceTempDir() {
-    final folder = Directory('${Directory.systemTemp.path}/whatsapp_invoices');
+  /// Android FileProvider only shares files under the app cache dir.
+  /// [Directory.systemTemp] is often outside that folder, so WhatsApp never opens.
+  static Future<Directory> _invoiceTempDir() async {
+    final Directory base;
+    if (Platform.isAndroid) {
+      base = await getTemporaryDirectory();
+    } else {
+      base = Directory.systemTemp;
+    }
+    final folder = Directory('${base.path}/whatsapp_invoices');
     if (!folder.existsSync()) {
       folder.createSync(recursive: true);
     }
@@ -39,14 +46,17 @@ abstract final class WhatsappInvoiceShare {
   }
 
   /// Android opens that number's WhatsApp chat with this PDF attached.
+  /// [app] picks personal WhatsApp or WhatsApp Business — no fallback.
   /// Other platforms share the PDF file itself (never a web link).
   static Future<bool> shareDownloadedPdf({
     required Uint8List bytes,
     required String filename,
     required String? phoneRaw,
+    WhatsAppClientApp app = WhatsAppClientApp.personal,
+    String caption = 'Here is your invoice',
   }) async {
     final safe = filename.replaceAll(RegExp(r'[^\w.\-]+'), '_');
-    final file = File('${_invoiceTempDir().path}/$safe');
+    final file = File('${(await _invoiceTempDir()).path}/$safe');
     await file.writeAsBytes(bytes, flush: true);
 
     final digits = phoneDigits(phoneRaw);
@@ -55,13 +65,20 @@ abstract final class WhatsappInvoiceShare {
         final opened = await _channel.invokeMethod<bool>('sharePdf', {
           'path': file.path,
           'phone': digits,
+          'caption': caption.trim().isEmpty ? 'Here is your invoice' : caption.trim(),
+          'business': app == WhatsAppClientApp.business,
         });
-        if (opened == true) return true;
-      } catch (_) {}
+        return opened == true;
+      } on PlatformException {
+        return false;
+      } catch (_) {
+        return false;
+      }
     }
 
     await SharePlus.instance.share(
       ShareParams(
+        text: caption.trim().isEmpty ? 'Here is your invoice' : caption.trim(),
         files: [
           XFile(
             file.path,

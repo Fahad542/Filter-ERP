@@ -521,7 +521,7 @@ class _MyAppState extends State<MyApp> {
           return MaterialApp(
             navigatorKey: _navigatorKey,
             scaffoldMessengerKey: ToastService.scaffoldMessengerKey,
-            title: 'Filter ERP',
+            title: 'Filter Hub',
             debugShowCheckedModeBanner: false,
             // Theme Configuration
             theme: AppTheme.lightThemeFor(settings.locale),

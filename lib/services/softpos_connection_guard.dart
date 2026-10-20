@@ -3,7 +3,6 @@ import 'package:flutter/widgets.dart';
 import '../l10n/app_localizations.dart';
 import '../utils/toast_service.dart';
 import 'softpos_access_service.dart';
-import 'softpos_bridge.dart';
 import 'softpos_settings.dart';
 
 /// SoftPOS link status for Orders Hub pill / settings clarity.
@@ -17,7 +16,7 @@ enum SoftPosLinkStatus {
   /// Enabled but SoftPOS terminal app not reachable (closed / offline).
   offline,
 
-  /// Enabled + SoftPOS terminal online (socket presence or LAN /health).
+  /// Enabled + SoftPOS terminal bound (backend socket).
   online,
 }
 
@@ -38,7 +37,7 @@ extension SoftPosLinkStatusLabel on SoftPosLinkStatus {
   String get pillText => 'SoftPOS · $label';
 }
 
-/// Blocks invoice / request-payment until SoftPOS is reachable (socket or LAN).
+/// Blocks invoice / request-payment until SoftPOS is bound (backend socket).
 abstract final class SoftPosConnectionGuard {
   /// Resolve UI status from settings. Bound SoftPOS shows Connected
   /// (Online/Offline presence is not surfaced in the pill).
@@ -50,14 +49,11 @@ abstract final class SoftPosConnectionGuard {
     return SoftPosLinkStatus.online;
   }
 
+  /// Bound SoftPOS (= Connected) is enough to send a payment request.
+  /// Online/offline presence is not required — the handset picks up via socket
+  /// when it comes online.
   static Future<bool> _isReady(SoftPosSettingsSnapshot cfg) async {
-    final deviceId = (cfg.deviceId ?? '').trim();
-    if (deviceId.isNotEmpty) {
-      return SoftPosBridge.isBoundDeviceOnline();
-    }
-    final host = cfg.host.trim();
-    if (host.isEmpty) return false;
-    return SoftPosBridge.ping(host: host, port: cfg.port, attempts: 1);
+    return (cfg.deviceId ?? '').trim().isNotEmpty;
   }
 
   static Future<bool> isConnectionStable() async {
@@ -67,7 +63,7 @@ abstract final class SoftPosConnectionGuard {
     return _isReady(cfg);
   }
 
-  /// SoftPOS enabled + bound handset online (or LAN ping) — required before payment.
+  /// SoftPOS enabled + a terminal Connected (bound). Online presence optional.
   static Future<bool> isSoftPosReadyForPayment() async {
     if (!isSoftPosUiEnabled) return false;
     final cfg = await SoftPosSettings.load();
@@ -75,8 +71,8 @@ abstract final class SoftPosConnectionGuard {
     return _isReady(cfg);
   }
 
-  /// When SoftPOS bridge is enabled, checks terminal reachability and toasts if not.
-  /// Returns `true` when the action may proceed.
+  /// When SoftPOS bridge is enabled, requires a Connected (bound) terminal.
+  /// Does not block on Online/Offline presence. Returns `true` to proceed.
   static Future<bool> ensureStableOrToast(BuildContext context) async {
     if (!isSoftPosUiEnabled) return true;
     final cfg = await SoftPosSettings.load();
@@ -103,4 +99,6 @@ typedef SoftPosSettingsSnapshot = ({
   String? deviceId,
   String? terminalId,
   String? deviceLabel,
+  String? userId,
+  String? branchId,
 });
